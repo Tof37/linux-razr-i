@@ -162,6 +162,7 @@ static struct drm_conn_prop_enum_list drm_connector_enum_list[] =
 	{ DRM_MODE_CONNECTOR_HDMIB, "HDMI-B", 0 },
 	{ DRM_MODE_CONNECTOR_TV, "TV", 0 },
 	{ DRM_MODE_CONNECTOR_eDP, "eDP", 0 },
+	{ DRM_MODE_CONNECTOR_MIPI, "MIPI", 0},
 };
 
 static struct drm_prop_enum_list drm_encoder_enum_list[] =
@@ -170,6 +171,7 @@ static struct drm_prop_enum_list drm_encoder_enum_list[] =
 	{ DRM_MODE_ENCODER_TMDS, "TMDS" },
 	{ DRM_MODE_ENCODER_LVDS, "LVDS" },
 	{ DRM_MODE_ENCODER_TVDAC, "TV" },
+	{ DRM_MODE_ENCODER_MIPI, "MIPI"},
 };
 
 char *drm_get_encoder_name(struct drm_encoder *encoder)
@@ -447,6 +449,10 @@ void drm_connector_init(struct drm_device *dev,
 		     const struct drm_connector_funcs *funcs,
 		     int connector_type)
 {
+	if (connector_type >= sizeof(drm_connector_enum_list)/sizeof(*drm_connector_enum_list)) {
+		DRM_ERROR("Invalid index!\n");
+		return;
+	}
 	mutex_lock(&dev->mode_config.mutex);
 
 	connector->dev = dev;
@@ -2112,7 +2118,7 @@ struct drm_property *drm_property_create(struct drm_device *dev, int flags,
 	INIT_LIST_HEAD(&property->enum_blob_list);
 
 	if (name)
-		strncpy(property->name, name, DRM_PROP_NAME_LEN);
+		strncpy(property->name, name, DRM_PROP_NAME_LEN-1);
 
 	list_add_tail(&property->head, &dev->mode_config.property_list);
 	return property;
@@ -2133,7 +2139,8 @@ int drm_property_add_enum(struct drm_property *property, int index,
 	if (!list_empty(&property->enum_blob_list)) {
 		list_for_each_entry(prop_enum, &property->enum_blob_list, head) {
 			if (prop_enum->value == value) {
-				strncpy(prop_enum->name, name, DRM_PROP_NAME_LEN);
+				strncpy(prop_enum->name, name, \
+					DRM_PROP_NAME_LEN-1);
 				prop_enum->name[DRM_PROP_NAME_LEN-1] = '\0';
 				return 0;
 			}

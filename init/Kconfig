@@ -915,6 +915,12 @@ config SYSCTL
 config ANON_INODES
 	bool
 
+config PANIC_TIMEOUT
+	int "Default panic timeout"
+	default 0
+	help
+	  Set default panic timeout.
+
 menuconfig EXPERT
 	bool "Configure standard kernel features (expert users)"
 	help
@@ -1080,6 +1086,15 @@ config SHMEM
 	  to userspace as tmpfs if TMPFS is enabled. Disabling this
 	  option replaces shmem and tmpfs with the much simpler ramfs code,
 	  which may be appropriate on small systems without swap.
+
+config ASHMEM
+	bool "Enable the Anonymous Shared Memory Subsystem"
+	default n
+	depends on SHMEM || TINY_SHMEM
+	help
+	  The ashmem subsystem is a new shared memory allocator, similar to
+	  POSIX SHM but with different behavior and sporting a simpler
+	  file-based API.
 
 config AIO
 	bool "Enable AIO support" if EXPERT
@@ -1363,6 +1378,16 @@ config MODULE_SRCVERSION_ALL
 	  others sometimes change the module source without updating
 	  the version).  With this option, such a "srcversion" field
 	  will be created for all modules.  If unsure, say N.
+
+config MODULE_EXTRA_COPY
+	bool "Keep an extra copy of a module while it is loading"
+	help
+	  Keep an extra copy of the module code while the module is loading.
+	  This extra copy contains the raw, unlinked code.  It is freed after
+	  the module's initialization function has finished loading.  This
+	  option is useful if you want to make a self-contained
+	  FIPS-140-compliant module which must check its own integrity.
+	  If unsure, say N.
 
 endif # MODULES
 

@@ -1213,6 +1213,10 @@ static int dapm_power_widgets(struct snd_soc_dapm_context *dapm, int event)
 					&async_domain);
 	async_synchronize_full_domain(&async_domain);
 
+	list_for_each_entry(d, &dapm->card->dapm_list, list)
+		if (d->stream_event)
+			d->stream_event(dapm, event);
+
 	pop_dbg(dapm->dev, card->pop_time,
 		"DAPM sequencing finished, waiting %dms\n", card->pop_time);
 	pop_wait(card->pop_time);

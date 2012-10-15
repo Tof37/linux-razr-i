@@ -34,6 +34,8 @@
 #include <linux/miscdevice.h>
 #include <linux/pti.h>
 
+#include <asm/intel_scu_ipc.h>
+
 #define DRIVERNAME		"pti"
 #define PCINAME			"pciPTI"
 #define TTYNAME			"ttyPTI"
@@ -52,6 +54,15 @@
 #define USER_COPY_SIZE		8192 /* 8Kb buffer for user space copy */
 #define APERTURE_14		0x3800000 /* offset to first OS write addr */
 #define APERTURE_LEN		0x400000  /* address length */
+
+#define SMIP_PTI_OFFSET		0x30C /*
+				       * offset to PTI configuration
+				       * in MIP header
+				       */
+#define SMIP_PTI_EN		(1<<7) /*
+					* PTI enable bit in PTI
+					* configuration
+					*/
 
 struct pti_tty {
 	struct pti_masterchannel *mc;
@@ -75,8 +86,9 @@ struct pti_dev {
 static DEFINE_MUTEX(alloclock);
 
 static struct pci_device_id pci_ids[] __devinitconst = {
-		{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x82B)},
-		{0}
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x082B)},
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x0900)},
+	{0}
 };
 
 static struct tty_driver *pti_tty_driver;
@@ -158,7 +170,8 @@ static void pti_write_to_aperture(struct pti_masterchannel *mc,
  *  in 32 byte chunks.
  */
 
-static void pti_control_frame_built_and_sent(struct pti_masterchannel *mc)
+static void pti_control_frame_built_and_sent(struct pti_masterchannel *mc,
+					const char *thread_name)
 {
 	struct pti_masterchannel mccontrol = {.master = CONTROL_ID,
 					      .channel = 0};
@@ -170,15 +183,20 @@ static void pti_control_frame_built_and_sent(struct pti_masterchannel *mc)
 	 * we only need to be as large as what 'comm' in that
 	 * structure is.
 	 */
-	char comm[TASK_COMM_LEN];
 
-	if (!in_interrupt())
-		get_task_comm(comm, current);
+	char comm[TASK_COMM_LEN+1];
+	/* task information */
+	if (thread_name)
+		strncpy(comm, thread_name, sizeof(comm)-1);
+	else if (in_irq())
+		strncpy(comm, "hardirq", sizeof(comm)-1);
+	else if (in_softirq())
+		strncpy(comm, "softirq", sizeof(comm)-1);
 	else
-		strncpy(comm, "Interrupt", TASK_COMM_LEN);
+		strncpy(comm, current->comm, sizeof(comm)-1);
 
 	/* Absolutely ensure our buffer is zero terminated. */
-	comm[TASK_COMM_LEN-1] = 0;
+	comm[TASK_COMM_LEN] = 0;
 
 	mccontrol.channel = pti_control_channel;
 	pti_control_channel = (pti_control_channel + 1) & 0x7f;
@@ -206,7 +224,7 @@ static void pti_write_full_frame_to_aperture(struct pti_masterchannel *mc,
 						const unsigned char *buf,
 						int len)
 {
-	pti_control_frame_built_and_sent(mc);
+	pti_control_frame_built_and_sent(mc, NULL);
 	pti_write_to_aperture(mc, (u8 *)buf, len);
 }
 
@@ -227,7 +245,8 @@ static void pti_write_full_frame_to_aperture(struct pti_masterchannel *mc,
  * channel id. The bit is one if the id is taken and 0 if free. For
  * every master there are 128 channel id's.
  */
-static struct pti_masterchannel *get_id(u8 *id_array, int max_ids, int base_id)
+static struct pti_masterchannel *get_id(u8 *id_array, int max_ids,
+					int base_id, const char *thread_name)
 {
 	struct pti_masterchannel *mc;
 	int i, j, mask;
@@ -257,13 +276,13 @@ static struct pti_masterchannel *get_id(u8 *id_array, int max_ids, int base_id)
 	mc->master  = base_id;
 	mc->channel = ((i & 0xf)<<3) + j;
 	/* write new master Id / channel Id allocation to channel control */
-	pti_control_frame_built_and_sent(mc);
+	pti_control_frame_built_and_sent(mc, thread_name);
 	return mc;
 }
 
 /*
  * The following three functions:
- * pti_request_mastercahannel(), mipi_release_masterchannel()
+ * pti_request_masterchannel(), mipi_release_masterchannel()
  * and pti_writedata() are an API for other kernel drivers to
  * access PTI.
  */
@@ -284,24 +303,28 @@ static struct pti_masterchannel *get_id(u8 *id_array, int max_ids, int base_id)
  *	pti_masterchannel struct
  *	0 for error
  */
-struct pti_masterchannel *pti_request_masterchannel(u8 type)
+struct pti_masterchannel *pti_request_masterchannel(u8 type, const char *name)
 {
 	struct pti_masterchannel *mc;
+
+	if (drv_data == NULL)
+		return NULL;
 
 	mutex_lock(&alloclock);
 
 	switch (type) {
 
 	case 0:
-		mc = get_id(drv_data->ia_app, MAX_APP_IDS, APP_BASE_ID);
+		mc = get_id(drv_data->ia_app, MAX_APP_IDS, APP_BASE_ID, name);
 		break;
 
 	case 1:
-		mc = get_id(drv_data->ia_os, MAX_OS_IDS, OS_BASE_ID);
+		mc = get_id(drv_data->ia_os, MAX_OS_IDS, OS_BASE_ID, name);
 		break;
 
 	case 2:
-		mc = get_id(drv_data->ia_modem, MAX_MODEM_IDS, MODEM_BASE_ID);
+		mc = get_id(drv_data->ia_modem, MAX_MODEM_IDS,
+						MODEM_BASE_ID, name);
 		break;
 	default:
 		mc = NULL;
@@ -472,9 +495,9 @@ static int pti_tty_install(struct tty_driver *driver, struct tty_struct *tty)
 			return -ENOMEM;
 
 		if (idx == PTITTY_MINOR_START)
-			pti_tty_data->mc = pti_request_masterchannel(0);
+			pti_tty_data->mc = pti_request_masterchannel(0, NULL);
 		else
-			pti_tty_data->mc = pti_request_masterchannel(2);
+			pti_tty_data->mc = pti_request_masterchannel(2, NULL);
 
 		if (pti_tty_data->mc == NULL) {
 			kfree(pti_tty_data);
@@ -563,7 +586,7 @@ static int pti_char_open(struct inode *inode, struct file *filp)
 	 * before assigning the value to filp->private_data.
 	 * Slightly easier to debug if this driver needs debugging.
 	 */
-	mc = pti_request_masterchannel(0);
+	mc = pti_request_masterchannel(0, NULL);
 	if (mc == NULL)
 		return -ENOMEM;
 	filp->private_data = mc;
@@ -879,6 +902,9 @@ static struct pci_driver pti_pci_driver = {
  * pti_init()- Overall entry/init call to the pti driver.
  *             It starts the registration process with the kernel.
  *
+ *             MIP header is checked if PTI is enabled and error is
+ *             returned if not
+ *
  * Returns:
  *	int __init, 0 for success
  *	otherwise value is an error
@@ -887,6 +913,22 @@ static struct pci_driver pti_pci_driver = {
 static int __init pti_init(void)
 {
 	int retval = -EINVAL;
+
+#ifdef CONFIG_INTEL_SCU_IPC
+	u8 smip_pti;
+
+	retval = intel_scu_ipc_read_mip(&smip_pti, 1, SMIP_PTI_OFFSET, 1);
+	if (retval) {
+		pr_err("%s(%d): Mip read failed (retval = %d)\n",
+		       __func__, __LINE__, retval);
+		return retval;
+	}
+	if (!(smip_pti & SMIP_PTI_EN)) {
+		pr_info("%s(%d): PTI disabled in MIP header\n",
+			__func__, __LINE__);
+		return -EPERM;
+	}
+#endif /* CONFIG_INTEL_SCU_IPC */
 
 	/* First register module as tty device */
 

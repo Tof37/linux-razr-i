@@ -26,7 +26,7 @@
 
 #include <linux/slab.h>
 #include <linux/kernel.h>
-#include <linux/device.h>
+#include <linux/platform_device.h>
 #include <linux/etherdevice.h>
 
 #include <asm/atomic.h>
@@ -86,7 +86,10 @@ struct f_rndis {
 	struct gether			port;
 	u8				ctrl_id, data_id;
 	u8				ethaddr[ETH_ALEN];
+	u32				vendorID;
+	const char			*manufacturer;
 	int				config;
+
 
 	struct rndis_ep_descs		fs;
 	struct rndis_ep_descs		hs;
@@ -187,12 +190,11 @@ static struct usb_interface_assoc_descriptor
 rndis_iad_descriptor = {
 	.bLength =		sizeof rndis_iad_descriptor,
 	.bDescriptorType =	USB_DT_INTERFACE_ASSOCIATION,
-
 	.bFirstInterface =	0, /* XXX, hardcoded */
 	.bInterfaceCount = 	2,	// control + data
 	.bFunctionClass =	USB_CLASS_COMM,
 	.bFunctionSubClass =	USB_CDC_SUBCLASS_ETHERNET,
-	.bFunctionProtocol =	USB_CDC_PROTO_NONE,
+	.bFunctionProtocol =	USB_CDC_ACM_PROTO_VENDOR,
 	/* .iFunction = DYNAMIC */
 };
 
@@ -306,12 +308,83 @@ static struct usb_gadget_strings *rndis_strings[] = {
 
 /*-------------------------------------------------------------------------*/
 
+
+static struct sk_buff
+*rndis_pskb_copy(struct sk_buff *skb, unsigned int headroom, gfp_t gfp_mask)
+{
+	/*
+	*      Allocate the copy buffer
+	*/
+	struct sk_buff *n;
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+	n = alloc_skb(skb->end, gfp_mask);
+#else
+	n = alloc_skb(skb->end - skb->head, gfp_mask);
+#endif
+	if (!n)
+		goto out;
+
+	/* Set the data pointer */
+	skb_reserve(n, headroom);
+	/* Set the tail pointer and length */
+	skb_put(n, skb_headlen(skb));
+	/* Copy the bytes */
+	skb_copy_from_linear_data(skb, n->data, n->len);
+
+	n->truesize += skb->data_len;
+	n->data_len  = skb->data_len;
+	n->len       = skb->len;
+
+	if (skb_shinfo(skb)->nr_frags) {
+		int i;
+
+		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+			skb_shinfo(n)->frags[i] = skb_shinfo(skb)->frags[i];
+			get_page(skb_shinfo(n)->frags[i].page);
+		}
+		skb_shinfo(n)->nr_frags = i;
+	}
+
+	if (skb_has_frag_list(skb)) {
+		skb_shinfo(n)->frag_list = skb_shinfo(skb)->frag_list;
+		skb_clone_fraglist(n);
+	}
+
+	copy_skb_header(n, skb);
+out:
+	return n;
+}
+
+/*Alloc headroom for rndis header. This function ensure that the whole rndis
+* package align on 64B after rndis header is added to the package.
+*/
+static struct sk_buff
+*rndis_skb_realloc_headroom(struct sk_buff *skb, unsigned int headroom)
+{
+	struct sk_buff *skb2;
+	int delta = headroom - skb_headroom(skb);
+
+
+	if (delta <= 0) {
+		skb2 = rndis_pskb_copy(skb, headroom, GFP_ATOMIC);
+	} else {
+
+		skb2 = skb_clone(skb, GFP_ATOMIC);
+		if (skb2 && pskb_expand_head(skb2, delta, 0, GFP_ATOMIC)) {
+			kfree_skb(skb2);
+			skb2 = NULL;
+		}
+	}
+	return skb2;
+}
+
 static struct sk_buff *rndis_add_header(struct gether *port,
 					struct sk_buff *skb)
 {
 	struct sk_buff *skb2;
 
-	skb2 = skb_realloc_headroom(skb, sizeof(struct rndis_packet_msg_type));
+	skb2 = rndis_skb_realloc_headroom(skb,
+			sizeof(struct rndis_packet_msg_type));
 	if (skb2)
 		rndis_add_hdr(skb2);
 
@@ -390,6 +463,11 @@ static void rndis_command_complete(struct usb_ep *ep, struct usb_request *req)
 	struct usb_composite_dev	*cdev = rndis->port.func.config->cdev;
 	int				status;
 
+	if (req->status) {
+		DBG(cdev, "RNDIS command completes abnormally status %d\n",
+			req->status);
+		return;
+	}
 	/* received RNDIS command from USB_CDC_SEND_ENCAPSULATED_COMMAND */
 //	spin_lock(&dev->lock);
 	status = rndis_msg_parser(rndis->config, (u8 *) req->buf);
@@ -486,10 +564,10 @@ static int rndis_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 			usb_ep_disable(rndis->notify);
 		} else {
 			VDBG(cdev, "init rndis ctrl %d\n", intf);
-			rndis->notify_desc = ep_choose(cdev->gadget,
-					rndis->hs.notify,
-					rndis->fs.notify);
 		}
+		rndis->notify_desc = ep_choose(cdev->gadget,
+				rndis->hs.notify,
+				rndis->fs.notify);
 		usb_ep_enable(rndis->notify, rndis->notify_desc);
 		rndis->notify->driver_data = rndis;
 
@@ -503,11 +581,11 @@ static int rndis_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 
 		if (!rndis->port.in) {
 			DBG(cdev, "init rndis\n");
-			rndis->port.in = ep_choose(cdev->gadget,
-					rndis->hs.in, rndis->fs.in);
-			rndis->port.out = ep_choose(cdev->gadget,
-					rndis->hs.out, rndis->fs.out);
 		}
+		rndis->port.in = ep_choose(cdev->gadget,
+				rndis->hs.in, rndis->fs.in);
+		rndis->port.out = ep_choose(cdev->gadget,
+				rndis->hs.out, rndis->fs.out);
 
 		/* Avoid ZLPs; they can be troublesome. */
 		rndis->port.is_zlp_ok = false;
@@ -706,12 +784,9 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
 	rndis_set_param_medium(rndis->config, NDIS_MEDIUM_802_3, 0);
 	rndis_set_host_mac(rndis->config, rndis->ethaddr);
 
-#if 0
-// FIXME
-	if (rndis_set_param_vendor(rndis->config, vendorID,
-				manufacturer))
-		goto fail0;
-#endif
+	if (rndis_set_param_vendor(rndis->config, rndis->vendorID,
+				   rndis->manufacturer))
+			goto fail;
 
 	/* NOTE:  all that is done without knowing or caring about
 	 * the network link ... which is unavailable to this code
@@ -753,8 +828,11 @@ rndis_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct f_rndis		*rndis = func_to_rndis(f);
 
+	rndis_string_defs[0].id = 0;
 	rndis_deregister(rndis->config);
 	rndis_exit();
+
+	rndis_string_defs[0].id = 0;
 
 	if (gadget_is_dualspeed(c->cdev->gadget))
 		usb_free_descriptors(f->hs_descriptors);
@@ -786,7 +864,8 @@ static inline bool can_support_rndis(struct usb_configuration *c)
  * for calling @gether_cleanup() before module unload.
  */
 int
-rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN])
+rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN],
+				u32 vendorID, const char *manufacturer)
 {
 	struct f_rndis	*rndis;
 	int		status;
@@ -831,6 +910,8 @@ rndis_bind_config(struct usb_configuration *c, u8 ethaddr[ETH_ALEN])
 		goto fail;
 
 	memcpy(rndis->ethaddr, ethaddr, ETH_ALEN);
+	rndis->vendorID = vendorID;
+	rndis->manufacturer = manufacturer;
 
 	/* RNDIS activates when the host changes this filter */
 	rndis->port.cdc_filter = 0;

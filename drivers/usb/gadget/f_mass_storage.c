@@ -297,6 +297,9 @@
 
 #include "gadget_chips.h"
 
+#ifdef CONFIG_USB_GADGET_DWC3
+const char lun_file_name[30] = "/storage/storage.img";
+#endif
 
 /*------------------------------------------------------------------------*/
 
@@ -314,6 +317,19 @@ static const char fsg_string_interface[] = "Mass Storage";
 
 
 /*-------------------------------------------------------------------------*/
+
+#ifdef CONFIG_USB_MOT_ANDROID
+
+void handle_switch_index(int index);
+
+#define SWITCH_INDEX_UNKNOWN   0x00
+#define SWITCH_INDEX_CDROM     0x01
+#define SWITCH_INDEX_MTPUSBNET 0x1E
+#define SWITCH_INDEX_RESET     0x41
+
+int ms_cdrom_enable;
+
+#endif
 
 struct fsg_dev;
 struct fsg_common;
@@ -407,6 +423,10 @@ struct fsg_common {
 	char inquiry_string[8 + 16 + 4 + 1];
 
 	struct kref		ref;
+#ifdef CONFIG_USB_MOT_ANDROID
+	unsigned int		cdrom_lun_num;
+	unsigned int		switch_mode:1;
+#endif
 };
 
 struct fsg_config {
@@ -432,6 +452,9 @@ struct fsg_config {
 	u16 release;
 
 	char			can_stall;
+#ifdef CONFIG_USB_MOT_ANDROID
+	unsigned cdrom_lun_num;
+#endif
 };
 
 struct fsg_dev {
@@ -640,10 +663,27 @@ static int fsg_setup(struct usb_function *f,
 		if (ctrl->bRequestType !=
 		    (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE))
 			break;
-		if (w_index != fsg->interface_number || w_value != 0)
+		if (w_index != fsg->interface_number
+				|| w_value != 0 || w_length != 1)
 			return -EDOM;
 		VDBG(fsg, "get max LUN\n");
-		*(u8 *)req->buf = fsg->common->nluns - 1;
+
+#ifdef CONFIG_USB_MOT_ANDROID
+		if (fsg->common->cdrom_lun_num > 0) {
+			if (ms_cdrom_enable)
+				*(u8 *)req->buf = fsg->common->nluns - 1;
+			else
+				*(u8 *)req->buf =
+					fsg->common->cdrom_lun_num - 1;
+		} else {
+			if (ms_cdrom_enable)
+				*(u8 *)req->buf = 0;
+			else
+				*(u8 *)req->buf = fsg->common->nluns - 1;
+		}
+#else
+		 *(u8 *)req->buf = fsg->common->nluns - 1;
+#endif
 
 		/* Respond with data/status */
 		req->length = min((u16)1, w_length);
@@ -775,8 +815,23 @@ static int do_read(struct fsg_common *common)
 
 	/* Carry out the file reads */
 	amount_left = common->data_size_from_cmnd;
+#ifdef CONFIG_USB_GADGET_DWC3
+	if (unlikely(amount_left == 0)) {
+		/* Wait for the next buffer to become available */
+		bh = common->next_buffhd_to_fill;
+		while (bh->state != BUF_STATE_EMPTY) {
+			rc = sleep_thread(common);
+			if (rc)
+				return rc;
+		}
+		bh->inreq->length = 0;
+
+		return -EIO;		/* No default reply */
+	}
+#else
 	if (unlikely(amount_left == 0))
 		return -EIO;		/* No default reply */
+#endif
 
 	for (;;) {
 		/*
@@ -901,18 +956,19 @@ static int do_write(struct fsg_common *common)
 		/*
 		 * We allow DPO (Disable Page Out = don't save data in the
 		 * cache) and FUA (Force Unit Access = write directly to the
-		 * medium).  We don't implement DPO; we implement FUA by
-		 * performing synchronous output.
-		 */
+		 * medium). We don't implement DPO; we implement FUA by
+		 * performing synchronous output. */
 		if (common->cmnd[1] & ~0x18) {
 			curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 			return -EINVAL;
 		}
+
 		if (!curlun->nofua && (common->cmnd[1] & 0x08)) { /* FUA */
 			spin_lock(&curlun->filp->f_lock);
 			curlun->filp->f_flags |= O_SYNC;
 			spin_unlock(&curlun->filp->f_lock);
 		}
+
 	}
 	if (lba >= curlun->num_sectors) {
 		curlun->sense_data = SS_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE;
@@ -1055,11 +1111,19 @@ static int do_write(struct fsg_common *common)
 			}
 			continue;
 		}
-
+#ifdef CONFIG_USB_MOT_ANDROID
+		/* Do not wait here. Just check for any pending signals and
+		* continue with the next BH to process */
+		if (signal_pending(current)) {
+			rc = -EINTR;
+			return rc;
+		}
+#else
 		/* Wait for something to happen */
 		rc = sleep_thread(common);
 		if (rc)
 			return rc;
+#endif
 	}
 
 	return -EIO;		/* No default reply */
@@ -1314,7 +1378,116 @@ static int do_read_header(struct fsg_common *common, struct fsg_buffhd *bh)
 	store_cdrom_address(&buf[4], msf, lba);
 	return 8;
 }
+#ifdef CONFIG_USB_MOT_ANDROID
+struct toc_header {
+	u8 data_len_msb;
+	u8 data_len_lsb;
+	u8 first_track_number;
+	u8 last_track_number;
+};
 
+struct toc_descriptor {
+	u8 ctrl;
+	u8 adr;
+	u8 tno;
+	u8 point;
+	u8 min;
+	u8 sec;
+	u8 frame;
+	u8 zero;
+	u8 pmin;
+	u8 psec;
+	u8 pframe;
+};
+
+static int build_toc_response_buf(u8 *dest)
+{
+	struct toc_header *pheader = (struct toc_header *)dest;
+	struct toc_descriptor *pdesc;
+
+	/* build header */
+	pheader->data_len_msb = 0x00;
+	pheader->data_len_lsb = 0x2E; /* TOC data length */
+	pheader->first_track_number = 0x01;
+	pheader->last_track_number = 0x01;
+
+	/* toc descriptor 1 */
+	pdesc = (struct toc_descriptor *)&dest[4];
+	pdesc->ctrl = 0x01;
+	pdesc->adr = 0x16;
+	pdesc->tno = 0x00;
+	pdesc->point = 0xA0;
+	pdesc->min = 0x00;
+	pdesc->sec = 0x00;
+	pdesc->frame = 0x00;
+	pdesc->zero = 0x00;
+	pdesc->pmin = 0x01;	/* first track number */
+	pdesc->psec = 0x00;
+	pdesc->pframe = 0x00;
+
+	/* toc descriptor 2 */
+	pdesc = pdesc + 1;
+	pdesc->ctrl = 0x01;
+	pdesc->adr = 0x16;
+	pdesc->tno = 0x00;
+	pdesc->point = 0xA1;
+	pdesc->min = 0x00;
+	pdesc->sec = 0x00;
+	pdesc->frame = 0x00;
+	pdesc->zero = 0x00;
+	pdesc->pmin = 0x01;	/* last track number */
+	pdesc->psec = 0x00;
+	pdesc->pframe = 0x00;
+
+	/* toc descriptor 3 */
+	pdesc = pdesc + 1;
+	pdesc->ctrl = 0x01;
+	pdesc->adr = 0x16;
+	pdesc->tno = 0x00;
+	pdesc->point = 0xA2;
+	pdesc->min = 0x00;
+	pdesc->sec = 0x00;
+	pdesc->frame = 0x00;
+	pdesc->zero = 0x00;
+	pdesc->pmin = 0x4F;	/* pmin, psec, pframe represents */
+	pdesc->psec = 0x21;	/* start position of lead-out */
+	pdesc->pframe = 0x029;
+
+	/* toc descriptor 4 */
+	pdesc = pdesc + 1;
+	pdesc->ctrl = 0x01;
+	pdesc->adr = 0x14;
+	pdesc->tno = 0x00;
+	pdesc->point = 0x01;
+	pdesc->min = 0x00;
+	pdesc->sec = 0x00;
+	pdesc->frame = 0x00;
+	pdesc->zero = 0x00;
+	pdesc->pmin = 0x00;	/* pmin, psec, pframe represents */
+	pdesc->psec = 0x02;	/* start position of track */
+	pdesc->pframe = 0x00;
+
+	/* return total packet length */
+	return (sizeof(struct toc_descriptor)*4) + sizeof(struct toc_header);
+}
+
+static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
+{
+	struct fsg_lun	*curlun = common->curlun;
+	int		start_track = common->cmnd[6];
+	u8		*buf = (u8 *)bh->buf;
+	int toc_buf_len = 0;
+
+	if ((common->cmnd[1] & ~0x02) != 0 ||	/* Mask away MSF */
+			start_track > 1) {
+		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
+		return -EINVAL;
+	}
+
+	toc_buf_len = build_toc_response_buf(buf);
+	return toc_buf_len;
+}
+#else
 static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 {
 	struct fsg_lun	*curlun = common->curlun;
@@ -1341,6 +1514,7 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	store_cdrom_address(&buf[16], msf, curlun->num_sectors);
 	return 20;
 }
+#endif
 
 static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
 {
@@ -1478,6 +1652,19 @@ static int do_start_stop(struct fsg_common *common)
 		else if (r)
 			return 0;
 	}
+
+#ifdef CONFIG_USB_MOT_ANDROID
+	/* If lun is removable disk then cdrom parameter
+	 * is set to '0', if lun is cdrom cdrom parameter
+	 * is set to 1.
+	 * Depending on cdrom value, loej=1, start=0 then
+	 * schedule a work-queue for mode change
+	 */
+	if (curlun->cdrom && loej && !start) {
+		printk(KERN_INFO "schedule fsg cdrom eject\n");
+		common->switch_mode = 1;
+	}
+#endif
 
 	up_read(&common->filesem);
 	down_write(&common->filesem);
@@ -2076,9 +2263,19 @@ static int do_scsi_command(struct fsg_common *common)
 			goto unknown_cmnd;
 		common->data_size_from_cmnd =
 			get_unaligned_be16(&common->cmnd[7]);
+#ifdef CONFIG_USB_MOT_ANDROID
+		/* Set bit 9 to 1 in the mask because Mac Sends a value in byte
+		* 9  of the READ_TOC . Windows does not set it, but changing
+		* the mask covers both host envs.
+		*/
+		reply = check_command(common, 10, DATA_DIR_TO_HOST,
+				      (0xf<<6) | (1<<1), 1,
+				      "READ TOC");
+#else
 		reply = check_command(common, 10, DATA_DIR_TO_HOST,
 				      (7<<6) | (1<<1), 1,
 				      "READ TOC");
+#endif
 		if (reply == 0)
 			reply = do_read_toc(common, bh);
 		break;
@@ -2330,6 +2527,30 @@ static int enable_endpoint(struct fsg_common *common, struct usb_ep *ep,
 	int	rc;
 
 	ep->driver_data = common;
+#ifdef CONFIG_USB_GADGET_DWC3
+	if (common->fsg->gadget->speed == USB_SPEED_SUPER) {
+		if (ep == common->fsg->bulk_in) {
+			ep->maxburst = fsg_ss_bulk_in_comp_desc.bMaxBurst;
+			ep->max_streams =
+				fsg_ss_bulk_in_comp_desc.bmAttributes;
+		} else if (ep == common->fsg->bulk_out) {
+			ep->maxburst = fsg_ss_bulk_out_comp_desc.bMaxBurst;
+			ep->max_streams =
+				fsg_ss_bulk_out_comp_desc.bmAttributes;
+#if 0
+		} else if (ep == common->fsg->intr_in) {
+			ep->maxburst = fsg_ss_intr_ep_comp_desc.bMaxBurst;
+			ep->max_streams = 0;
+#endif
+		} else {
+			ep->maxburst = 0;
+			ep->max_streams = 0;
+		}
+	} else {
+		ep->maxburst = 0;
+		ep->max_streams = 0;
+	}
+#endif
 	rc = usb_ep_enable(ep, d);
 	if (rc)
 		ERROR(common, "can't enable %s, result %d\n", ep->name, rc);
@@ -2396,15 +2617,29 @@ reset:
 	fsg = common->fsg;
 
 	/* Enable the endpoints */
+#ifdef CONFIG_USB_GADGET_DWC3
+	d = fsg_ep_desc(common->gadget,
+			&fsg_fs_bulk_in_desc,
+			&fsg_hs_bulk_in_desc,
+			&fsg_ss_bulk_in_desc);
+#else
 	d = fsg_ep_desc(common->gadget,
 			&fsg_fs_bulk_in_desc, &fsg_hs_bulk_in_desc);
+#endif
 	rc = enable_endpoint(common, fsg->bulk_in, d);
 	if (rc)
 		goto reset;
 	fsg->bulk_in_enabled = 1;
 
+#ifdef CONFIG_USB_GADGET_DWC3
+	d = fsg_ep_desc(common->gadget,
+			&fsg_fs_bulk_out_desc,
+			&fsg_hs_bulk_out_desc,
+			&fsg_ss_bulk_out_desc);
+#else
 	d = fsg_ep_desc(common->gadget,
 			&fsg_fs_bulk_out_desc, &fsg_hs_bulk_out_desc);
+#endif
 	rc = enable_endpoint(common, fsg->bulk_out, d);
 	if (rc)
 		goto reset;
@@ -2440,14 +2675,42 @@ reset:
 static int fsg_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 {
 	struct fsg_dev *fsg = fsg_from_func(f);
+#ifdef CONFIG_USB_MOT_ANDROID
+	int i;
+#endif
+
 	fsg->common->new_fsg = fsg;
 	raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
+
+#ifdef CONFIG_USB_MOT_ANDROID
+	for (i = 0; i < fsg->common->nluns; ++i) {
+		if ((i == fsg->common->cdrom_lun_num) && ms_cdrom_enable) {
+			fsg->common->luns[i].cdrom = 1;
+			fsg->common->luns[i].ro = 1;
+		} else {
+			fsg->common->luns[i].cdrom = 0;
+			fsg->common->luns[i].ro = 0;
+		}
+	}
+#endif
 	return USB_GADGET_DELAYED_STATUS;
 }
 
 static void fsg_disable(struct usb_function *f)
 {
 	struct fsg_dev *fsg = fsg_from_func(f);
+	int    i;
+	struct fsg_buffhd *bh;
+
+	/* free all of pending request */
+	for (i = 0; i < FSG_NUM_BUFFERS; ++i) {
+		bh = &fsg->common->buffhds[i];
+		if (bh->inreq_busy)
+			usb_ep_dequeue(fsg->bulk_in, bh->inreq);
+		if (bh->outreq_busy)
+			usb_ep_dequeue(fsg->bulk_out, bh->outreq);
+	}
+
 	fsg->common->new_fsg = NULL;
 	raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
 }
@@ -2633,6 +2896,13 @@ static int fsg_main_thread(void *common_)
 			continue;
 		}
 
+#ifdef CONFIG_USB_MOT_ANDROID
+		if (common->switch_mode) {
+			common->switch_mode = 0;
+			handle_switch_index(SWITCH_INDEX_MTPUSBNET);
+		}
+#endif
+
 		if (!common->running) {
 			sleep_thread(common);
 			continue;
@@ -2744,6 +3014,9 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		common->free_storage_on_release = 0;
 	}
 
+#ifdef CONFIG_USB_MOT_ANDROID
+	common->cdrom_lun_num = cfg->cdrom_lun_num;
+#endif
 	common->ops = cfg->ops;
 	common->private_data = cfg->private_data;
 
@@ -2752,14 +3025,9 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 	common->ep0req = cdev->req;
 	common->cdev = cdev;
 
-	/* Maybe allocate device-global string IDs, and patch descriptors */
-	if (fsg_strings[FSG_STRING_INTERFACE].id == 0) {
-		rc = usb_string_id(cdev);
-		if (unlikely(rc < 0))
-			goto error_release;
-		fsg_strings[FSG_STRING_INTERFACE].id = rc;
-		fsg_intf_desc.iInterface = rc;
-	}
+#ifdef CONFIG_USB_GADGET_DWC3
+		fsg_intf_desc.iInterface = 0;
+#endif
 
 	/*
 	 * Create the LUNs, open their backing files, and register the
@@ -2807,6 +3075,13 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		if (rc)
 			goto error_luns;
 
+#ifdef CONFIG_USB_GADGET_DWC3
+		/* lcfg->filename = lun_file_name; */
+		lcfg->filename = NULL;
+		curlun->removable = 1;
+		curlun->ro = 0;
+		printk(KERN_ERR "lun open: %s", lcfg->filename);
+#endif
 		if (lcfg->filename) {
 			rc = fsg_lun_open(curlun, lcfg->filename);
 			if (rc)
@@ -2966,6 +3241,9 @@ static void fsg_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct fsg_common	*common = fsg->common;
 
 	DBG(fsg, "unbind\n");
+
+	fsg_strings[FSG_STRING_INTERFACE].id = 0;
+
 	if (fsg->common->fsg == fsg) {
 		fsg->common->new_fsg = NULL;
 		raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
@@ -3025,7 +3303,31 @@ static int fsg_bind(struct usb_configuration *c, struct usb_function *f)
 			return -ENOMEM;
 		}
 	}
+#ifdef CONFIG_USB_GADGET_DWC3
+	if (gadget_is_superspeed(gadget)) {
+		unsigned	max_burst;
 
+		/* Calculate bMaxBurst, we know packet size is 1024 */
+		max_burst = min_t(unsigned, FSG_BUFLEN / 1024, 15);
+
+		fsg_ss_bulk_in_desc.bEndpointAddress =
+			fsg_fs_bulk_in_desc.bEndpointAddress;
+		fsg_ss_bulk_in_comp_desc.bMaxBurst = max_burst;
+
+		fsg_ss_bulk_out_desc.bEndpointAddress =
+			fsg_fs_bulk_out_desc.bEndpointAddress;
+		fsg_ss_bulk_out_comp_desc.bMaxBurst = max_burst;
+
+		f->ss_descriptors = usb_copy_descriptors(fsg_ss_function);
+
+		if (unlikely(!f->ss_descriptors)) {
+			usb_free_descriptors(f->hs_descriptors);
+			usb_free_descriptors(f->descriptors);
+			return -ENOMEM;
+		}
+	}
+
+#endif
 	return 0;
 
 autoconf_fail:
@@ -3048,11 +3350,21 @@ static int fsg_bind_config(struct usb_composite_dev *cdev,
 	struct fsg_dev *fsg;
 	int rc;
 
+
+	/* Maybe allocate device-global string IDs, and patch descriptors */
+	if (fsg_strings[FSG_STRING_INTERFACE].id == 0) {
+		rc = usb_string_id(cdev);
+		if (unlikely(rc < 0))
+			return rc;
+		fsg_strings[FSG_STRING_INTERFACE].id = rc;
+		fsg_intf_desc.iInterface = rc;
+	}
+
 	fsg = kzalloc(sizeof *fsg, GFP_KERNEL);
 	if (unlikely(!fsg))
 		return -ENOMEM;
 
-	fsg->function.name        = FSG_DRIVER_DESC;
+	fsg->function.name        = "mass_storage";
 	fsg->function.strings     = fsg_strings_array;
 	fsg->function.bind        = fsg_bind;
 	fsg->function.unbind      = fsg_unbind;

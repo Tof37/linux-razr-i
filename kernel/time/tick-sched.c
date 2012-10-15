@@ -404,12 +404,14 @@ void tick_nohz_stop_sched_tick(int inidle)
 		 * the scheduler tick in nohz_restart_sched_tick.
 		 */
 		if (!ts->tick_stopped) {
-			select_nohz_load_balancer(1);
+			if(!current->pid) /* make sure current is in idle process */
+				select_nohz_load_balancer(1);
 
 			ts->idle_tick = hrtimer_get_expires(&ts->sched_timer);
 			ts->tick_stopped = 1;
 			ts->idle_jiffies = last_jiffies;
-			rcu_enter_nohz();
+			if(!current->pid)
+				rcu_enter_nohz();
 		}
 
 		ts->idle_sleeps++;
@@ -499,12 +501,14 @@ void tick_nohz_restart_sched_tick(void)
 {
 	int cpu = smp_processor_id();
 	struct tick_sched *ts = &per_cpu(tick_cpu_sched, cpu);
+	unsigned long flags;
 #ifndef CONFIG_VIRT_CPU_ACCOUNTING
 	unsigned long ticks;
 #endif
 	ktime_t now;
 
-	local_irq_disable();
+	local_irq_save(flags);
+
 	if (ts->idle_active || (ts->inidle && ts->tick_stopped))
 		now = ktime_get();
 
@@ -513,13 +517,14 @@ void tick_nohz_restart_sched_tick(void)
 
 	if (!ts->inidle || !ts->tick_stopped) {
 		ts->inidle = 0;
-		local_irq_enable();
+		local_irq_restore(flags);
 		return;
 	}
 
 	ts->inidle = 0;
 
-	rcu_exit_nohz();
+	if(!current->pid)
+		rcu_exit_nohz();
 
 	/* Update jiffies first */
 	select_nohz_load_balancer(0);
@@ -549,7 +554,7 @@ void tick_nohz_restart_sched_tick(void)
 
 	tick_nohz_restart(ts, now);
 
-	local_irq_enable();
+	local_irq_restore(flags);
 }
 
 static int tick_nohz_reprogram(struct tick_sched *ts, ktime_t now)

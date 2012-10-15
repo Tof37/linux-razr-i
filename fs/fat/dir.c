@@ -20,6 +20,7 @@
 #include <linux/compat.h>
 #include <asm/uaccess.h>
 #include <linux/kernel.h>
+#include <linux/backing-dev.h>
 #include "fat.h"
 
 /*
@@ -80,6 +81,8 @@ static int fat__get_entry(struct inode *dir, loff_t *pos,
 			  struct buffer_head **bh, struct msdos_dir_entry **de)
 {
 	struct super_block *sb = dir->i_sb;
+	struct inode *bd_inode = sb->s_bdev->bd_inode;
+	struct backing_dev_info *bdi = bd_inode->i_mapping->backing_dev_info;
 	sector_t phys, iblock;
 	unsigned long mapped_blocks;
 	int err, offset;
@@ -93,6 +96,9 @@ next:
 	err = fat_bmap(dir, iblock, &phys, &mapped_blocks, 0);
 	if (err || !phys)
 		return -1;	/* beyond EOF or error */
+
+	if (test_bit(BDI_removing, &bdi->state))
+		return -1;
 
 	fat_dir_readahead(dir, iblock, phys);
 
@@ -754,6 +760,13 @@ static int fat_ioctl_readdir(struct inode *inode, struct file *filp,
 	return ret;
 }
 
+static int fat_ioctl_volume_id(struct inode *dir)
+{
+	struct super_block *sb = dir->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	return sbi->vol_id;
+}
+
 static long fat_dir_ioctl(struct file *filp, unsigned int cmd,
 			  unsigned long arg)
 {
@@ -770,6 +783,8 @@ static long fat_dir_ioctl(struct file *filp, unsigned int cmd,
 		short_only = 0;
 		both = 1;
 		break;
+	case VFAT_IOCTL_GET_VOLUME_ID:
+		return fat_ioctl_volume_id(inode);
 	default:
 		return fat_generic_ioctl(filp, cmd, arg);
 	}

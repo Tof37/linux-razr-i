@@ -48,6 +48,14 @@ config FRAME_WARN
 	  Setting it to 0 disables the warning.
 	  Requires gcc 4.4
 
+config MUDFLAP
+	bool "Enable mudflap to check slab write after free"
+	depends on DEBUG_SLAB_LEAK || SLUB_DEBUG_ON
+	help
+	  This uses mudflap which introduced by gcc4 to check slab corruption
+	  which is caused by writing after free.
+	  This is smaller and faster than kmemcheck.
+
 config MAGIC_SYSRQ
 	bool "Magic SysRq key"
 	depends on !UML
@@ -667,8 +675,9 @@ config DEBUG_LOCKING_API_SELFTESTS
 	  mutexes and rwsems.
 
 config STACKTRACE
-	bool
+	bool "Stacktrace"
 	depends on STACKTRACE_SUPPORT
+	default y
 
 config DEBUG_STACK_USAGE
 	bool "Stack utilization instrumentation"
@@ -932,6 +941,18 @@ config KPROBES_SANITY_TEST
 	  This option provides for testing basic kprobes functionality on
 	  boot. A sample kprobe, jprobe and kretprobe are inserted and
 	  verified for functionality.
+
+	  Say N if you are unsure.
+
+config SOFTLOCKUP_WATCHDOG_TEST
+	bool "To test softlockup watchdog"
+	depends on LOCKUP_DETECTOR && DEBUG_FS
+	default n
+	help
+	  This option provides a kernel debugfs item that can be used
+	  to test softlockup watchdog reset. This option is not useful
+	  for distributions or general kernels, but only for kernel
+	  developers working on architecture code for test purpose.
 
 	  Say N if you are unsure.
 

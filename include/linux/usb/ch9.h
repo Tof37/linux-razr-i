@@ -34,6 +34,8 @@
 #define __LINUX_USB_CH9_H
 
 #include <linux/types.h>	/* __u8 etc */
+#include <asm/byteorder.h>	/* le16_to_cpu */
+
 
 /*-------------------------------------------------------------------------*/
 
@@ -102,6 +104,8 @@
 #define USB_REQ_LOOPBACK_DATA_READ	0x16
 #define USB_REQ_SET_INTERFACE_DS	0x17
 
+#define USB_REQ_SET_SEL			0x30	/* from USB3.0 spec */
+
 /* The Link Power Management (LPM) ECN defines USB_REQ_TEST_AND_SET command,
  * used by hubs to put ports into a new L1 suspend state, except that it
  * forgot to define its number ...
@@ -122,6 +126,8 @@
 #define USB_DEVICE_A_HNP_SUPPORT	4	/* (otg) RH port supports HNP */
 #define USB_DEVICE_A_ALT_HNP_SUPPORT	5	/* (otg) other RH port does */
 #define USB_DEVICE_DEBUG_MODE		6	/* (special devices only) */
+#define USB_NTF_HOST_REL                51
+#define USB_B3_RSP_ENABLE               52
 
 /*
  * Test Mode Selectors
@@ -134,6 +140,19 @@
 #define	TEST_FORCE_EN	5
 
 /*
+ * USB OTG 2.0 Test Mode
+ * See OTG 2.0 spec Table 6-8
+ */
+#define	TEST_SRP_REQD	6
+#define	TEST_HNP_REQD	7
+
+/*
+ * OTG 2.0
+ * Section 6.2 & 6.3
+ */
+#define	 OTG_STATUS_SELECTOR	0xF000
+
+/*
  * New Feature Selectors as added by USB 3.0
  * See USB 3.0 spec Table 9-6
  */
@@ -143,6 +162,11 @@
 #define USB_INTRF_FUNC_SUSPEND	0	/* function suspend */
 
 #define USB_INTR_FUNC_SUSPEND_OPT_MASK	0xFF00
+/*
+ * Suspend Options, Table 9-7 USB 3.0 spec
+ */
+#define USB_INTRF_FUNC_SUSPEND_LP	(1 << (8 + 0))
+#define USB_INTRF_FUNC_SUSPEND_RW	(1 << (8 + 1))
 
 #define USB_ENDPOINT_HALT		0	/* IN/OUT will STALL */
 
@@ -261,6 +285,8 @@ struct usb_device_descriptor {
 
 #define USB_DT_DEVICE_SIZE		18
 
+/* bcdDevice defined in OTG2.0 section 6.4.3.2 */
+#define USB_DT_BCD_VBUSOFF		BIT(0)
 
 /*
  * Device and/or Interface Class codes
@@ -570,6 +596,17 @@ static inline int usb_endpoint_is_isoc_out(
 	return usb_endpoint_xfer_isoc(epd) && usb_endpoint_dir_out(epd);
 }
 
+/**
+ * usb_endpoint_maxp - get endpoint's max packet size
+ * @epd: endpoint to be checked
+ *
+ * Returns @epd's max packet
+ */
+static inline int usb_endpoint_maxp(const struct usb_endpoint_descriptor *epd)
+{
+	return le16_to_cpu(epd->wMaxPacketSize);
+}
+
 /*-------------------------------------------------------------------------*/
 
 /* USB_DT_SS_ENDPOINT_COMP: SuperSpeed Endpoint Companion descriptor */
@@ -607,17 +644,19 @@ struct usb_qualifier_descriptor {
 
 /*-------------------------------------------------------------------------*/
 
-/* USB_DT_OTG (from OTG 1.0a supplement) */
+/* USB_DT_OTG (from OTG 2.0) */
 struct usb_otg_descriptor {
 	__u8  bLength;
 	__u8  bDescriptorType;
 
 	__u8  bmAttributes;	/* support for HNP, SRP, etc */
+	__le16 bcdOTG;		/* release number, i.e, 2.0 is 0x0200 */
 } __attribute__ ((packed));
 
 /* from usb_otg_descriptor.bmAttributes */
 #define USB_OTG_SRP		(1 << 0)
 #define USB_OTG_HNP		(1 << 1)	/* swap host/device roles */
+#define USB_OTG_ADP		(1 << 2)	/* attachment detection */
 
 /*-------------------------------------------------------------------------*/
 
@@ -850,6 +889,18 @@ enum usb_device_speed {
 	USB_SPEED_WIRELESS,			/* wireless (usb 2.5) */
 	USB_SPEED_SUPER,			/* usb 3.0 */
 };
+
+#ifdef __KERNEL__
+
+/**
+ * usb_speed_string() - Returns human readable-name of the speed.
+ * @speed: The speed to return human-readable name for.  If it's not
+ *   any of the speeds defined in usb_device_speed enum, string for
+ *   USB_SPEED_UNKNOWN will be returned.
+ */
+extern const char *usb_speed_string(enum usb_device_speed speed);
+
+#endif
 
 enum usb_device_state {
 	/* NOTATTACHED isn't in the USB spec, and this state acts

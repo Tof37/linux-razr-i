@@ -40,6 +40,13 @@ config LEDS_ATMEL_PWM
 	  This option enables support for LEDs driven using outputs
 	  of the dedicated PWM controller found on newer Atmel SOCs.
 
+config LEDS_LM2755
+	tristate "LM2755 LED driver support"
+	depends on LEDS_CLASS
+	depends on I2C
+	help
+	  This option enables support for LM2755 RGB LED driver.
+
 config LEDS_LM3530
 	tristate "LCD Backlight driver for LM3530"
 	depends on LEDS_CLASS
@@ -369,6 +376,33 @@ config LEDS_MC13783
 	  This option enable support for on-chip LED drivers found
 	  on Freescale Semiconductor MC13783 PMIC.
 
+config LEDS_MSIC_CHRG
+        tristate "LED driver for Intel MSIC Charging LED"
+        depends on INTEL_SCU_IPC
+        help
+          This option enables to support for Intel Charging LED on Medfield Platform
+          LED brightness can be controlled via sysfs.
+
+config LEDS_INTEL_KPD
+        tristate "LED driver for Intel Keypad LED"
+        depends on INTEL_SCU_IPC
+        help
+          This option enables to support for Intel Keypad LED on Medfield Platform
+          LED brightness can be controlled via sysfs.
+
+          For detail information of sysfs control, Please refer to kernel document
+          Documentation/ABI/testing/sysfs-class-led.
+
+config LEDS_INTEL_KPD_GPIO
+	tristate "LED driver for Intel Keypad GPIO LED"
+	depends on GPIOLIB
+	help
+	  This option enables to support for Intel Keypad GPIO LED on Lexington
+	  Platform. LED brightness can be controlled via sysfs.
+
+	  For detail information of sysfs control, Please refer to kernel document
+	  Documentation/ABI/testing/sysfs-class-led.
+
 config LEDS_NS2
 	tristate "LED support for Network Space v2 GPIO LEDs"
 	depends on LEDS_CLASS
@@ -465,6 +499,12 @@ config LEDS_TRIGGER_DEFAULT_ON
 	help
 	  This allows LEDs to be initialised in the ON state.
 	  If unsure, say Y.
+
+config LEDS_TRIGGER_SLEEP
+	tristate "LED Sleep Mode Trigger"
+	depends on LEDS_TRIGGERS && HAS_EARLYSUSPEND
+	help
+	  This turns LEDs on when the screen is off but the cpu still running.
 
 comment "iptables trigger is under Netfilter config (LED target)"
 	depends on LEDS_TRIGGERS

@@ -176,19 +176,21 @@ static void __cpuinit smp_callin(void)
 	 * Waiting 2s total for startup (udelay is not yet working)
 	 */
 	timeout = jiffies + 2*HZ;
-	while (time_before(jiffies, timeout)) {
+	while (1) {
 		/*
 		 * Has the boot CPU finished it's STARTUP sequence?
 		 */
 		if (cpumask_test_cpu(cpuid, cpu_callout_mask))
 			break;
+		if (!time_before(jiffies, timeout)) {
+			WARN("%s: CPU%d started up but did not get a callout!\n",
+			__func__, cpuid);
+
+			timeout = jiffies + 2*HZ;
+		}
 		cpu_relax();
 	}
 
-	if (!time_before(jiffies, timeout)) {
-		panic("%s: CPU%d started up but did not get a callout!\n",
-		      __func__, cpuid);
-	}
 
 	/*
 	 * the boot CPU has finished the init stage and is spinning
@@ -516,6 +518,20 @@ wakeup_secondary_cpu_via_nmi(int logical_apicid, unsigned long start_eip)
 static int __cpuinit
 wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 {
+	static const struct init_wakeup_delays delays = {
+		.assert_init	= 10000,
+		.icr_accept	= 300,
+		.cpu_accept	= 200,
+	};
+
+	return wakeup_secondary_cpu_via_init_delays(phys_apicid, start_eip,
+						    &delays);
+}
+
+int
+wakeup_secondary_cpu_via_init_delays(int phys_apicid,
+	unsigned long start_eip, const struct init_wakeup_delays *delays)
+{
 	unsigned long send_status, accept_status = 0;
 	int maxlvt, num_starts, j;
 
@@ -544,7 +560,7 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 	pr_debug("Waiting for send to finish...\n");
 	send_status = safe_apic_wait_icr_idle();
 
-	mdelay(10);
+	udelay(delays->assert_init);
 
 	pr_debug("Deasserting INIT.\n");
 
@@ -601,7 +617,7 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 		/*
 		 * Give the other CPU some time to accept the IPI.
 		 */
-		udelay(300);
+		udelay(delays->icr_accept);
 
 		pr_debug("Startup point 1.\n");
 
@@ -611,7 +627,7 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 		/*
 		 * Give the other CPU some time to accept the IPI.
 		 */
-		udelay(200);
+		udelay(delays->cpu_accept);
 		if (maxlvt > 3)		/* Due to the Pentium erratum 3AP.  */
 			apic_write(APIC_ESR, 0);
 		accept_status = (apic_read(APIC_ESR) & 0xEF);
@@ -864,7 +880,14 @@ int __cpuinit native_cpu_up(unsigned int cpu)
 	err = do_boot_cpu(apicid, cpu);
 	if (err) {
 		pr_debug("do_boot_cpu failed %d\n", err);
-		return -EIO;
+		/* On Medfield, when CPU 1 fails to boot when being woken up
+		 * from S3, kernel removes it from cpu bitmap. But if CPU 1
+		 * is in non-sleeping mode at that time, all later C6 and
+		 * deep sleeping mode transition started by CPU 0 would fail.
+		 * It causes power loss. We trigger a BUG here to reboot
+		 * board by WDT.
+		 */
+		BUG();
 	}
 
 	/*

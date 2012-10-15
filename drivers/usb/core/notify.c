@@ -66,3 +66,27 @@ void usb_notify_remove_bus(struct usb_bus *ubus)
 {
 	blocking_notifier_call_chain(&usb_notifier_list, USB_BUS_REMOVE, ubus);
 }
+
+void usb_notify_warning(struct usb_device *udev, int warning_code)
+{
+	char *notsupport[2] = { "USB_WARNING=DEVICE_NOT_SUPPORT", NULL };
+	char *notrespond[2] = { "USB_WARNING=DEVICE_NOT_RESPONDING", NULL };
+	char *vbusinvalid[2] = { "USB_WARNING=VBUS_INVALID", NULL };
+	char **uevent_envp = NULL;
+
+	switch (warning_code) {
+	case USB_WARNING_NOT_SUPPORT:
+		uevent_envp = notsupport;
+		break;
+	case USB_WARNING_NO_RESPONSE:
+		uevent_envp = notrespond;
+		break;
+	case USB_WARNING_VBUS_INVALID:
+		uevent_envp = vbusinvalid;
+		break;
+	default:
+		return;
+	}
+
+	kobject_uevent_env(&udev->dev.kobj, KOBJ_CHANGE, uevent_envp);
+}

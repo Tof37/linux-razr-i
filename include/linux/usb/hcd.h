@@ -22,6 +22,7 @@
 #ifdef __KERNEL__
 
 #include <linux/rwsem.h>
+#include <linux/wakelock.h>
 
 #define MAX_TOPO_LEVEL		6
 
@@ -86,6 +87,7 @@ struct usb_hcd {
 	struct urb		*status_urb;	/* the current status urb */
 #ifdef CONFIG_USB_SUSPEND
 	struct work_struct	wakeup_work;	/* for remote wakeup */
+	struct wake_lock	*wake_lock;	/* for add time-delay */
 #endif
 
 	/*
@@ -128,6 +130,8 @@ struct usb_hcd {
 	unsigned		wireless:1;	/* Wireless USB HCD */
 	unsigned		authorized_default:1;
 	unsigned		has_tt:1;	/* Integrated TT in root hub */
+	unsigned		has_sram:1;	/* Local SRAM for caching */
+	unsigned		sram_no_payload:1; /* sram not for payload */
 
 	int			irq;		/* irq allocated */
 	void __iomem		*regs;		/* device memory/io */
@@ -174,6 +178,13 @@ struct usb_hcd {
 	 * (ohci 32, uhci 1024, ehci 256/512/1024).
 	 */
 
+#ifdef CONFIG_USB_OTG
+	/* some otg HCDs need this to get USB_DEVICE_ADD and USB_DEVICE_REMOVE
+	 * from root hub, we do not want to use USB notification chain, since
+	 * it would be a over kill to use high level notification.
+	 */
+	void (*otg_notify) (struct usb_device *udev, unsigned action);
+#endif
 	/* The HC driver's private data is stored at the end of
 	 * this structure.
 	 */
@@ -343,6 +354,13 @@ struct hc_driver {
 		 * address is set
 		 */
 	int	(*update_device)(struct usb_hcd *, struct usb_device *);
+
+#ifdef CONFIG_USB_OTG
+	int	(*start_host) (struct usb_hcd *hcd);
+	int	(*stop_host) (struct usb_hcd *hcd);
+	int	(*reset_port) (struct usb_hcd *hcd);
+	int	(*release_host) (struct usb_hcd *hcd);
+#endif
 };
 
 extern int usb_hcd_link_urb_to_ep(struct usb_hcd *hcd, struct urb *urb);

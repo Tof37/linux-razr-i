@@ -12,6 +12,7 @@
 
 #include <linux/leds.h>
 #include <linux/sched.h>
+#include <linux/wakelock.h>
 
 #include <linux/mmc/core.h>
 #include <linux/mmc/pm.h>
@@ -76,6 +77,19 @@ struct mmc_ios {
 #define MMC_SET_DRIVER_TYPE_D	3
 };
 
+struct mmc_panic_host;
+
+struct mmc_host_panic_ops {
+	void	(*request)(struct mmc_panic_host *, struct mmc_request *);
+	void	(*prepare)(struct mmc_panic_host *);
+	int	(*setup)(struct mmc_panic_host *);
+	void	(*set_ios)(struct mmc_panic_host *);
+	void	(*dumpregs)(struct mmc_panic_host *);
+	int	(*power_on)(struct mmc_panic_host *);
+	int	(*hold_mutex)(struct mmc_panic_host *);
+	void	(*release_mutex)(struct mmc_panic_host *);
+};
+
 struct mmc_host_ops {
 	/*
 	 * Hosts that support power saving can use the 'enable' and 'disable'
@@ -106,6 +120,15 @@ struct mmc_host_ops {
 	 */
 	int (*enable)(struct mmc_host *host);
 	int (*disable)(struct mmc_host *host, int lazy);
+	/*
+	 * It is optional for the host to implement pre_req and post_req in
+	 * order to support double buffering of requests (prepare one
+	 * request while another request is active).
+	 */
+	void	(*post_req)(struct mmc_host *host, struct mmc_request *req,
+			    int err);
+	void	(*pre_req)(struct mmc_host *host, struct mmc_request *req,
+			   bool is_first_req);
 	void	(*request)(struct mmc_host *host, struct mmc_request *req);
 	/*
 	 * Avoid calling these three functions too often or in a "fast path",
@@ -139,10 +162,43 @@ struct mmc_host_ops {
 	int	(*start_signal_voltage_switch)(struct mmc_host *host, struct mmc_ios *ios);
 	int	(*execute_tuning)(struct mmc_host *host);
 	void	(*enable_preset_value)(struct mmc_host *host, bool enable);
+	int	(*select_drive_strength)(unsigned int max_dtr, int host_drv, int card_drv);
+	void	(*hw_reset)(struct mmc_host *host);
 };
 
 struct mmc_card;
 struct device;
+
+struct mmc_async_req {
+	/* active mmc request */
+	struct mmc_request	*mrq;
+	/*
+	 * Check error status of completed mmc request.
+	 * Returns 0 if success otherwise non zero.
+	 */
+	int (*err_check) (struct mmc_card *, struct mmc_async_req *);
+};
+
+struct mmc_panic_host {
+	/*
+	 * DMA buffer for the log
+	 */
+	dma_addr_t	dmabuf;
+	void		*logbuf;
+	const struct mmc_host_panic_ops *panic_ops;
+	unsigned int		panic_ready;
+	unsigned int		totalsecs;
+	unsigned int		max_blk_size;
+	unsigned int		max_blk_count;
+	unsigned int		max_req_size;
+	unsigned int		blkaddr;
+	unsigned int		caps;
+	u32			ocr;		/* the current OCR setting */
+	struct mmc_ios		ios;		/* current io bus settings */
+	struct mmc_card		*card;
+	struct mmc_host		*mmc;
+	void			*priv;
+};
 
 struct mmc_host {
 	struct device		*parent;
@@ -211,6 +267,15 @@ struct mmc_host {
 #define MMC_CAP_MAX_CURRENT_600	(1 << 28)	/* Host max current limit is 600mA */
 #define MMC_CAP_MAX_CURRENT_800	(1 << 29)	/* Host max current limit is 800mA */
 #define MMC_CAP_CMD23		(1 << 30)	/* CMD23 supported. */
+#define MMC_CAP_HW_RESET	(1 << 31)	/* Hardware reset */
+
+	unsigned int		caps2;		/* More host capabilities */
+
+#define MMC_CAP2_BOOTPART_NOACC	(1 << 0)	/* Boot partition no access */
+#define MMC_CAP2_RPMBPART_NOACC	(1 << 1)	/* RPMB partition no access */
+#define MMC_CAP2_HC_ERASE_SZ	(1 << 2)	/* high capacity erase size */
+#define MMC_CAP2_INIT_CARD_SYNC	(1 << 3)	/* init card in sync mode */
+#define MMC_CAP2_LED_SUPPORT	(1 << 4)	/* led support */
 
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
 
@@ -231,6 +296,7 @@ struct mmc_host {
 	unsigned int		max_req_size;	/* maximum number of bytes in one req */
 	unsigned int		max_blk_size;	/* maximum size of one mmc block */
 	unsigned int		max_blk_count;	/* maximum number of blocks in one req */
+	unsigned int		max_discard_to;	/* max. discard timeout in ms */
 
 	/* private data */
 	spinlock_t		lock;		/* lock for claim and bus ops */
@@ -261,9 +327,16 @@ struct mmc_host {
 	int			claim_cnt;	/* "claim" nesting count */
 
 	struct delayed_work	detect;
+	int			detect_change;	/* card detect flag */
+
+	struct wake_lock	detect_wake_lock;
 
 	const struct mmc_bus_ops *bus_ops;	/* current bus driver */
 	unsigned int		bus_refs;	/* reference counter */
+
+	unsigned int		bus_resume_flags;
+#define MMC_BUSRESUME_MANUAL_RESUME	(1 << 0)
+#define MMC_BUSRESUME_NEEDS_RESUME	(1 << 1)
 
 	unsigned int		sdio_irqs;
 	struct task_struct	*sdio_irq_thread;
@@ -281,13 +354,39 @@ struct mmc_host {
 
 	struct dentry		*debugfs_root;
 
+	struct mmc_async_req    *areq;          /* active async req */
+
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+	struct {
+		struct sdio_cis			*cis;
+		struct sdio_cccr		*cccr;
+		struct sdio_embedded_func	*funcs;
+		int				num_funcs;
+	} embedded_sdio_data;
+#endif
+
+	struct mmc_panic_host *phost;
 	unsigned long		private[0] ____cacheline_aligned;
 };
+
+#define SECTOR_SIZE	512
+int mmc_emergency_init(void);
+int mmc_emergency_write(char *, unsigned int);
+void mmc_alloc_panic_host(struct mmc_host *, const struct mmc_host_panic_ops *);
+void mmc_emergency_setup(struct mmc_host *host);
 
 extern struct mmc_host *mmc_alloc_host(int extra, struct device *);
 extern int mmc_add_host(struct mmc_host *);
 extern void mmc_remove_host(struct mmc_host *);
 extern void mmc_free_host(struct mmc_host *);
+
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+extern void mmc_set_embedded_sdio_data(struct mmc_host *host,
+				       struct sdio_cis *cis,
+				       struct sdio_cccr *cccr,
+				       struct sdio_embedded_func *funcs,
+				       int num_funcs);
+#endif
 
 static inline void *mmc_priv(struct mmc_host *host)
 {
@@ -299,6 +398,18 @@ static inline void *mmc_priv(struct mmc_host *host)
 #define mmc_dev(x)	((x)->parent)
 #define mmc_classdev(x)	(&(x)->class_dev)
 #define mmc_hostname(x)	(dev_name(&(x)->class_dev))
+#define mmc_bus_needs_resume(host) ((host)->bus_resume_flags & MMC_BUSRESUME_NEEDS_RESUME)
+#define mmc_bus_manual_resume(host) ((host)->bus_resume_flags & MMC_BUSRESUME_MANUAL_RESUME)
+
+static inline void mmc_set_bus_resume_policy(struct mmc_host *host, int manual)
+{
+	if (manual)
+		host->bus_resume_flags |= MMC_BUSRESUME_MANUAL_RESUME;
+	else
+		host->bus_resume_flags &= ~MMC_BUSRESUME_MANUAL_RESUME;
+}
+
+extern int mmc_resume_bus(struct mmc_host *host);
 
 extern int mmc_suspend_host(struct mmc_host *);
 extern int mmc_resume_host(struct mmc_host *);
@@ -373,5 +484,15 @@ static inline int mmc_host_cmd23(struct mmc_host *host)
 {
 	return host->caps & MMC_CAP_CMD23;
 }
-#endif
 
+static inline int mmc_boot_partition_access(struct mmc_host *host)
+{
+	return !(host->caps2 & MMC_CAP2_BOOTPART_NOACC);
+}
+
+static inline int mmc_rpmb_partition_access(struct mmc_host *host)
+{
+	return !(host->caps2 & MMC_CAP2_RPMBPART_NOACC);
+}
+
+#endif /* LINUX_MMC_HOST_H */

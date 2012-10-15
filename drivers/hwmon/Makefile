@@ -118,6 +118,19 @@ obj-$(CONFIG_SENSORS_W83L785TS)	+= w83l785ts.o
 obj-$(CONFIG_SENSORS_W83L786NG)	+= w83l786ng.o
 obj-$(CONFIG_SENSORS_WM831X)	+= wm831x-hwmon.o
 obj-$(CONFIG_SENSORS_WM8350)	+= wm8350-hwmon.o
+obj-$(CONFIG_SENSORS_LTR502ALS)		+= ltr502als.o
+obj-$(CONFIG_SENSORS_LIS3DH_ACC)        += lis3dh_acc.o
+obj-$(CONFIG_SENSORS_HMC5883)           += hmc5883.o
+obj-$(CONFIG_SENSORS_MPU3050)		+= mpu3050.o
+obj-$(CONFIG_SENSORS_MS5607)		+= ms5607.o
+obj-$(CONFIG_SENSORS_L3G4200D_POLL)	+= l3g4200d_poll.o
+obj-$(CONFIG_SENSORS_LPS331AP)         += lps331ap.o
+obj-$(CONFIG_MSIC_GPADC)	+= intel_mid_gpadc.o
+obj-$(CONFIG_BASINCOVE_GPADC)   += intel_basincove_gpadc.o
+obj-$(CONFIG_MID_PWM)		+= intel_mid_pwm.o
+obj-$(CONFIG_SENSORS_MID_CURRENT)	+= intel_mid_ocd.o
+obj-$(CONFIG_SENSORS_MID_VDD)	+= intel_mid_vdd.o
+obj-$(CONFIG_SENSORS_LSM303_MAG)   += lsm303dlhc_compass.o
 
 # PMBus drivers
 obj-$(CONFIG_PMBUS)		+= pmbus_core.o
@@ -130,4 +143,5 @@ obj-$(CONFIG_SENSORS_UCD9000)	+= ucd9000.o
 obj-$(CONFIG_SENSORS_UCD9200)	+= ucd9200.o
 
 ccflags-$(CONFIG_HWMON_DEBUG_CHIP) := -DDEBUG
-
+obj-$(CONFIG_SENSORS_MRFLD_CURRENT) += intel_mrfl_ocd.o
+obj-$(CONFIG_SENSORS_THERMAL_MRFLD) += intel_mrfl_thermal.o

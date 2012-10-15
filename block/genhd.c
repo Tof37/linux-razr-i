@@ -829,7 +829,7 @@ static void *show_partition_start(struct seq_file *seqf, loff_t *pos)
 
 	p = disk_seqf_start(seqf, pos);
 	if (!IS_ERR_OR_NULL(p) && !*pos)
-		seq_puts(seqf, "major minor  #blocks  name\n\n");
+		seq_puts(seqf, "major minor  #blocks  name\talias\n\n");
 	return p;
 }
 
@@ -850,10 +850,11 @@ static int show_partition(struct seq_file *seqf, void *v)
 	/* show the full disk and all non-0 size partitions of it */
 	disk_part_iter_init(&piter, sgp, DISK_PITER_INCL_PART0);
 	while ((part = disk_part_iter_next(&piter)))
-		seq_printf(seqf, "%4d  %7d %10llu %s\n",
+		seq_printf(seqf, "%4d  %7d %10llu %s\t%s\n",
 			   MAJOR(part_devt(part)), MINOR(part_devt(part)),
 			   (unsigned long long)part->nr_sects >> 1,
-			   disk_name(sgp, part->partno, buf));
+			   disk_name(sgp, part->partno, buf),
+			   part->info->volname);
 	disk_part_iter_exit(&piter);
 
 	return 0;
@@ -1105,6 +1106,22 @@ static void disk_release(struct device *dev)
 	free_part_info(&disk->part0);
 	kfree(disk);
 }
+
+static int disk_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	struct gendisk *disk = dev_to_disk(dev);
+	struct disk_part_iter piter;
+	struct hd_struct *part;
+	int cnt = 0;
+
+	disk_part_iter_init(&piter, disk, 0);
+	while((part = disk_part_iter_next(&piter)))
+		cnt++;
+	disk_part_iter_exit(&piter);
+	add_uevent_var(env, "NPARTS=%u", cnt);
+	return 0;
+}
+
 struct class block_class = {
 	.name		= "block",
 };
@@ -1123,6 +1140,7 @@ static struct device_type disk_type = {
 	.groups		= disk_attr_groups,
 	.release	= disk_release,
 	.devnode	= block_devnode,
+	.uevent		= disk_uevent,
 };
 
 #ifdef CONFIG_PROC_FS

@@ -57,6 +57,7 @@ struct uart_max3110 {
 	struct task_struct *main_thread;
 	struct task_struct *read_thread;
 	struct mutex thread_mutex;
+	struct mutex io_mutex;
 
 	u32 baud;
 	u16 cur_conf;
@@ -65,6 +66,7 @@ struct uart_max3110 {
 	u16 irq;
 
 	unsigned long uart_flags;
+	bool opened;
 
 	/* console related */
 	struct circ_buf con_xmit;
@@ -86,6 +88,7 @@ static int max3110_write_then_read(struct uart_max3110 *max,
 	struct spi_transfer	x;
 	int ret;
 
+	mutex_lock(&max->io_mutex);
 	spi_message_init(&message);
 	memset(&x, 0, sizeof x);
 	x.len = len;
@@ -100,6 +103,7 @@ static int max3110_write_then_read(struct uart_max3110 *max,
 
 	/* Do the i/o */
 	ret = spi_sync(spi, &message);
+	mutex_unlock(&max->io_mutex);
 	return ret;
 }
 
@@ -207,7 +211,7 @@ static void serial_m3110_con_write(struct console *co,
 	uart_console_write(&pmax->port, s, count, serial_m3110_con_putchar);
 
 	if (!test_and_set_bit(CON_TX_NEEDED, &pmax->uart_flags))
-		wake_up_process(pmax->main_thread);
+		wake_up(&pmax->wq);
 }
 
 static int __init
@@ -301,6 +305,7 @@ static void send_circ_buf(struct uart_max3110 *max,
 			}
 
 			/* Fail to send msg to console is not very critical */
+
 			ret = max3110_write_then_read(max, obuf, ibuf, blen, 0);
 			if (ret)
 				pr_warning(PR_FMT "%s(): get err msg %d\n",
@@ -349,7 +354,7 @@ static void serial_m3110_start_tx(struct uart_port *port)
 		container_of(port, struct uart_max3110, port);
 
 	if (!test_and_set_bit(UART_TX_NEEDED, &max->uart_flags))
-		wake_up_process(max->main_thread);
+		wake_up(&max->wq);
 }
 
 static void receive_chars(struct uart_max3110 *max, unsigned char *str, int len)
@@ -424,11 +429,13 @@ static int max3110_main_thread(void *_max)
 	pr_info(PR_FMT "start main thread\n");
 
 	do {
-		wait_event_interruptible(*wq, max->uart_flags || kthread_should_stop());
+		wait_event_interruptible(*wq,
+				max->uart_flags || kthread_should_stop());
 
 		mutex_lock(&max->thread_mutex);
 
-		if (test_and_clear_bit(BIT_IRQ_PENDING, &max->uart_flags))
+		if (test_and_clear_bit(BIT_IRQ_PENDING, &max->uart_flags) &&
+			max->opened)
 			max3110_con_receive(max);
 
 		/* first handle console output */
@@ -436,7 +443,8 @@ static int max3110_main_thread(void *_max)
 			send_circ_buf(max, xmit);
 
 		/* handle uart output */
-		if (test_and_clear_bit(UART_TX_NEEDED, &max->uart_flags))
+		if (test_and_clear_bit(UART_TX_NEEDED, &max->uart_flags) &&
+			max->opened)
 			transmit_char(max);
 
 		mutex_unlock(&max->thread_mutex);
@@ -452,8 +460,9 @@ static irqreturn_t serial_m3110_irq(int irq, void *dev_id)
 
 	/* max3110's irq is a falling edge, not level triggered,
 	 * so no need to disable the irq */
+
 	if (!test_and_set_bit(BIT_IRQ_PENDING, &max->uart_flags))
-		wake_up_process(max->main_thread);
+		wake_up(&max->wq);
 
 	return IRQ_HANDLED;
 }
@@ -538,6 +547,7 @@ static int serial_m3110_startup(struct uart_port *port)
 	}
 
 	max->cur_conf = config;
+	max->opened = true;
 	return 0;
 }
 
@@ -558,6 +568,7 @@ static void serial_m3110_shutdown(struct uart_port *port)
 	/* Disable interrupts from this port */
 	config = WC_TAG | WC_SW_SHDI;
 	max3110_out(max, config);
+	max->opened = false;
 }
 
 static void serial_m3110_release_port(struct uart_port *port)
@@ -809,6 +820,7 @@ static int __devinit serial_m3110_probe(struct spi_device *spi)
 	max->irq = (u16)spi->irq;
 
 	mutex_init(&max->thread_mutex);
+	mutex_init(&max->io_mutex);
 
 	max->word_7bits = 0;
 	max->parity = 0;

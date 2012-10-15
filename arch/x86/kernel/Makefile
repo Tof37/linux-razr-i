@@ -36,6 +36,7 @@ GCOV_PROFILE_paravirt.o		:= n
 CFLAGS_REMOVE_vread_tsc_64.o = -pg -fno-optimize-sibling-calls
 
 obj-y			:= process_$(BITS).o signal.o entry_$(BITS).o
+obj-$(CONFIG_MUDFLAP)   += mudflap.o
 obj-y			+= traps.o irq.o irq_$(BITS).o dumpstack_$(BITS).o
 obj-y			+= time.o ioport.o ldt.o dumpstack.o
 obj-y			+= setup.o x86_init.o i8259.o irqinit.o jump_label.o
@@ -115,6 +116,7 @@ obj-$(CONFIG_X86_CHECK_BIOS_CORRUPTION) += check.o
 
 obj-$(CONFIG_SWIOTLB)			+= pci-swiotlb.o
 obj-$(CONFIG_OF)			+= devicetree.o
+obj-$(CONFIG_BOOTINFO)			+= bootinfo.o
 
 ###
 # 64 bit specific files

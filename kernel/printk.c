@@ -53,6 +53,10 @@ void asmlinkage __attribute__((weak)) early_printk(const char *fmt, ...)
 
 #define __LOG_BUF_LEN	(1 << CONFIG_LOG_BUF_SHIFT)
 
+#ifdef        CONFIG_DEBUG_LL
+extern void printascii(char *);
+#endif
+
 /* printk's without a loglevel use this.. */
 #define DEFAULT_MESSAGE_LOGLEVEL CONFIG_DEFAULT_MESSAGE_LOGLEVEL
 
@@ -290,6 +294,53 @@ static inline void boot_delay_msec(void)
 }
 #endif
 
+/*
+ * Return the number of unread characters in the log buffer.
+ */
+static int log_buf_get_len(void)
+{
+	return logged_chars;
+}
+
+/*
+ * Clears the ring-buffer
+ */
+void log_buf_clear(void)
+{
+	logged_chars = 0;
+}
+
+/*
+ * Copy a range of characters from the log buffer.
+ */
+int log_buf_copy(char *dest, int idx, int len)
+{
+	int ret, max;
+	bool took_lock = false;
+
+	if (!oops_in_progress) {
+		spin_lock_irq(&logbuf_lock);
+		took_lock = true;
+	}
+
+	max = log_buf_get_len();
+	if (idx < 0 || idx >= max) {
+		ret = -1;
+	} else {
+		if (len > max - idx)
+			len = max - idx;
+		ret = len;
+		idx += (log_end - max);
+		while (len-- > 0)
+			dest[len] = LOG_BUF(idx + len);
+	}
+
+	if (took_lock)
+		spin_unlock_irq(&logbuf_lock);
+
+	return ret;
+}
+
 #ifdef CONFIG_SECURITY_DMESG_RESTRICT
 int dmesg_restrict = 1;
 #else
@@ -502,23 +553,6 @@ void kdb_syslog_data(char *syslog_data[4])
 }
 #endif	/* CONFIG_KGDB_KDB */
 
-/*
- * Call the console drivers on a range of log_buf
- */
-static void __call_console_drivers(unsigned start, unsigned end)
-{
-	struct console *con;
-
-	for_each_console(con) {
-		if (exclusive_console && con != exclusive_console)
-			continue;
-		if ((con->flags & CON_ENABLED) && con->write &&
-				(cpu_online(smp_processor_id()) ||
-				(con->flags & CON_ANYTIME)))
-			con->write(con, &LOG_BUF(start), end - start);
-	}
-}
-
 static int __read_mostly ignore_loglevel;
 
 static int __init ignore_loglevel_setup(char *str)
@@ -530,6 +564,24 @@ static int __init ignore_loglevel_setup(char *str)
 }
 
 early_param("ignore_loglevel", ignore_loglevel_setup);
+/*
+ * Call the console drivers on a range of log_buf
+ */
+static void __call_console_drivers(unsigned start, unsigned end, int loglevel)
+{
+	struct console *con;
+
+	for_each_console(con) {
+		if (exclusive_console && con != exclusive_console)
+			continue;
+		if (((con->flags & CON_IGNORELEVEL) || ignore_loglevel ||
+			loglevel < console_loglevel) &&
+			(con->flags & CON_ENABLED) && con->write &&
+			(cpu_online(smp_processor_id()) ||
+			(con->flags & CON_ANYTIME)))
+				con->write(con, &LOG_BUF(start), end - start);
+	}
+}
 
 /*
  * Write out chars from start to end - 1 inclusive
@@ -537,15 +589,15 @@ early_param("ignore_loglevel", ignore_loglevel_setup);
 static void _call_console_drivers(unsigned start,
 				unsigned end, int msg_log_level)
 {
-	if ((msg_log_level < console_loglevel || ignore_loglevel) &&
-			console_drivers && start != end) {
+	if (console_drivers && start != end) {
 		if ((start & LOG_BUF_MASK) > (end & LOG_BUF_MASK)) {
 			/* wrapped write */
 			__call_console_drivers(start & LOG_BUF_MASK,
-						log_buf_len);
-			__call_console_drivers(0, end & LOG_BUF_MASK);
+						log_buf_len, msg_log_level);
+			__call_console_drivers(0, end & LOG_BUF_MASK,
+								msg_log_level);
 		} else {
-			__call_console_drivers(start, end);
+			__call_console_drivers(start, end, msg_log_level);
 		}
 	}
 }
@@ -872,6 +924,10 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 	printed_len += vscnprintf(printk_buf + printed_len,
 				  sizeof(printk_buf) - printed_len, fmt, args);
 
+#ifdef	CONFIG_DEBUG_LL
+	printascii(printk_buf);
+#endif
+
 	p = printk_buf;
 
 	/* Read log level and handle special printk prefix */
@@ -925,9 +981,10 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 
 				t = cpu_clock(printk_cpu);
 				nanosec_rem = do_div(t, 1000000000);
-				tlen = sprintf(tbuf, "[%5lu.%06lu] ",
+				tlen = sprintf(tbuf, "[%5lu.%06lu,%d] ",
 						(unsigned long) t,
-						nanosec_rem / 1000);
+						nanosec_rem / 1000,
+						smp_processor_id());
 
 				for (tp = tbuf; tp < tbuf + tlen; tp++)
 					emit_log_char(*tp);
@@ -1146,7 +1203,6 @@ static int __cpuinit console_cpu_notify(struct notifier_block *self,
 	switch (action) {
 	case CPU_ONLINE:
 	case CPU_DEAD:
-	case CPU_DYING:
 	case CPU_DOWN_FAILED:
 	case CPU_UP_CANCELED:
 		console_lock();

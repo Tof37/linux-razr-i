@@ -12,6 +12,8 @@
 #include <linux/string.h>
 #include <linux/resume-trace.h>
 #include <linux/workqueue.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 
 #include "power.h"
 
@@ -132,6 +134,110 @@ power_attr(pm_test);
 
 #endif /* CONFIG_PM_SLEEP */
 
+#ifdef CONFIG_DEBUG_FS
+static char *suspend_step_name(enum suspend_stat_step step)
+{
+	switch (step) {
+	case SUSPEND_FREEZE:
+		return "freeze";
+	case SUSPEND_PREPARE:
+		return "prepare";
+	case SUSPEND_SUSPEND:
+		return "suspend";
+	case SUSPEND_SUSPEND_NOIRQ:
+		return "suspend_noirq";
+	case SUSPEND_RESUME_NOIRQ:
+		return "resume_noirq";
+	case SUSPEND_RESUME:
+		return "resume";
+	default:
+		return "";
+	}
+}
+
+static int suspend_stats_show(struct seq_file *s, void *unused)
+{
+	int i, index, last_dev, last_errno, last_step;
+
+	last_dev = suspend_stats.last_failed_dev + REC_FAILED_NUM - 1;
+	last_dev %= REC_FAILED_NUM;
+	last_errno = suspend_stats.last_failed_errno + REC_FAILED_NUM - 1;
+	last_errno %= REC_FAILED_NUM;
+	last_step = suspend_stats.last_failed_step + REC_FAILED_NUM - 1;
+	last_step %= REC_FAILED_NUM;
+	seq_printf(s, "%s: %d\n%s: %d\n%s: %d\n%s: %d\n"
+			"%s: %d\n%s: %d\n%s: %d\n%s: %d\n",
+			"success", suspend_stats.success,
+			"fail", suspend_stats.fail,
+			"failed_freeze", suspend_stats.failed_freeze,
+			"failed_prepare", suspend_stats.failed_prepare,
+			"failed_suspend", suspend_stats.failed_suspend,
+			"failed_suspend_noirq",
+				suspend_stats.failed_suspend_noirq,
+			"failed_resume", suspend_stats.failed_resume,
+			"failed_resume_noirq",
+				suspend_stats.failed_resume_noirq);
+	seq_printf(s,	"failures:\n  last_failed_dev:\t%-s\n",
+			suspend_stats.failed_devs[last_dev]);
+	for (i = 1; i < REC_FAILED_NUM; i++) {
+		index = last_dev + REC_FAILED_NUM - i;
+		index %= REC_FAILED_NUM;
+		seq_printf(s, "\t\t\t%-s\n",
+			suspend_stats.failed_devs[index]);
+	}
+	seq_printf(s,	"  last_failed_errno:\t%-d\n",
+			suspend_stats.errno[last_errno]);
+	for (i = 1; i < REC_FAILED_NUM; i++) {
+		index = last_errno + REC_FAILED_NUM - i;
+		index %= REC_FAILED_NUM;
+		seq_printf(s, "\t\t\t%-d\n",
+			suspend_stats.errno[index]);
+	}
+	seq_printf(s,	"  last_failed_step:\t%-s\n",
+			suspend_step_name(
+				suspend_stats.failed_steps[last_step]));
+	for (i = 1; i < REC_FAILED_NUM; i++) {
+		index = last_step + REC_FAILED_NUM - i;
+		index %= REC_FAILED_NUM;
+		seq_printf(s, "\t\t\t%-s\n",
+			suspend_step_name(
+				suspend_stats.failed_steps[index]));
+	}
+
+	return 0;
+}
+
+static int suspend_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, suspend_stats_show, NULL);
+}
+
+static const struct file_operations suspend_stats_operations = {
+	.open           = suspend_stats_open,
+	.read           = seq_read,
+	.llseek         = seq_lseek,
+	.release        = single_release,
+};
+
+static int __init pm_debugfs_init(void)
+{
+	debugfs_create_file("suspend_stats", S_IFREG | S_IRUGO,
+			NULL, NULL, &suspend_stats_operations);
+	return 0;
+}
+
+late_initcall(pm_debugfs_init);
+#endif /* CONFIG_DEBUG_FS */
+
+#ifdef CONFIG_PM_DEEPSLEEP
+static int pm_deepsleep_enabled;
+int get_deepsleep_mode(void)
+{
+	return pm_deepsleep_enabled;
+}
+EXPORT_SYMBOL(get_deepsleep_mode);
+#endif
+
 struct kobject *power_kobj;
 
 /**
@@ -170,12 +276,19 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t n)
 {
 #ifdef CONFIG_SUSPEND
+#ifdef CONFIG_EARLYSUSPEND
+	suspend_state_t state = PM_SUSPEND_ON;
+#else
 	suspend_state_t state = PM_SUSPEND_STANDBY;
+#endif
 	const char * const *s;
 #endif
 	char *p;
 	int len;
 	int error = -EINVAL;
+#ifdef CONFIG_PM_DEEPSLEEP
+	char temp[20];
+#endif
 
 	p = memchr(buf, '\n', n);
 	len = p ? p - buf : n;
@@ -186,13 +299,58 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
   goto Exit;
 	}
 
+#ifdef CONFIG_PM_DEEPSLEEP
+	if (sizeof(temp) - 1 < len) {
+		len = sizeof(temp)-1;
+		printk(KERN_ERR "pm states is invalid\n");
+	}
+	memset(temp, 0, sizeof(temp));
+	strncpy(temp, buf, len);
+
+
+	if (len == 9 && !strncmp(temp, "deepsleep", len)) {
+		s = &pm_states[PM_SUSPEND_MEM];
+		if (strlen(*s) > sizeof(temp) - 1) {
+			printk(KERN_ERR "pm states overflow\n");
+		} else {
+			memset(temp, 0, sizeof(temp));
+			strncpy(temp, *s, strlen(*s));
+			pm_deepsleep_enabled = 1;
+		}
+	} else if (pm_deepsleep_enabled == 1 && len == 2
+			&& !strncmp(temp, "on", len)) {
+		pm_deepsleep_enabled = 0;
+	}
+#endif
+
+
 #ifdef CONFIG_SUSPEND
+#ifdef CONFIG_PM_DEEPSLEEP
+	for (s = &pm_states[state]; state < PM_SUSPEND_MAX; s++, state++) {
+		if (*s && len == strlen(*s) && !strncmp(temp, *s, len))
+			break;
+	}
+#else
+
 	for (s = &pm_states[state]; state < PM_SUSPEND_MAX; s++, state++) {
 		if (*s && len == strlen(*s) && !strncmp(buf, *s, len))
 			break;
 	}
+#endif
 	if (state < PM_SUSPEND_MAX && *s)
+#ifdef CONFIG_EARLYSUSPEND
+		if (state == PM_SUSPEND_ON || valid_state(state)) {
+			error = 0;
+			request_suspend_state(state);
+		}
+#else
 		error = enter_state(state);
+		if (error) {
+			suspend_stats.fail++;
+			dpm_save_failed_errno(error);
+		} else
+			suspend_stats.success++;
+#endif
 #endif
 
  Exit:
@@ -297,6 +455,11 @@ power_attr(pm_trace_dev_match);
 
 #endif /* CONFIG_PM_TRACE */
 
+#ifdef CONFIG_USER_WAKELOCK
+power_attr(wake_lock);
+power_attr(wake_unlock);
+#endif
+
 static struct attribute * g[] = {
 	&state_attr.attr,
 #ifdef CONFIG_PM_TRACE
@@ -308,6 +471,10 @@ static struct attribute * g[] = {
 	&wakeup_count_attr.attr,
 #ifdef CONFIG_PM_DEBUG
 	&pm_test_attr.attr,
+#endif
+#ifdef CONFIG_USER_WAKELOCK
+	&wake_lock_attr.attr,
+	&wake_unlock_attr.attr,
 #endif
 #endif
 	NULL,
@@ -336,6 +503,11 @@ static int __init pm_init(void)
 	int error = pm_start_workqueue();
 	if (error)
 		return error;
+
+#ifdef CONFIG_PM_DEEPSLEEP
+	pm_deepsleep_enabled = 0;
+#endif
+
 	hibernate_image_size_init();
 	hibernate_reserved_size_init();
 	power_kobj = kobject_create_and_add("power", NULL);

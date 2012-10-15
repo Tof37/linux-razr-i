@@ -32,6 +32,7 @@ typedef struct user_fxsr_struct elf_fpxregset_t;
 #define R_386_GOTOFF	9
 #define R_386_GOTPC	10
 #define R_386_NUM	11
+#define R_386_TARGET1          12
 
 /*
  * These are used to set parameters in the core dumps.

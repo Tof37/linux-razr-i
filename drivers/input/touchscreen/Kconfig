@@ -260,6 +260,16 @@ config TOUCHSCREEN_MAX11801
 	  To compile this driver as a module, choose M here: the
 	  module will be called max11801_ts.
 
+config TOUCHSCREEN_MAX11871
+	tristate "Maxim max11871 touchscreen"
+	depends on I2C
+	help
+	  Say Y here if you have a Maxim max11871 touchscreen connected
+	  to your system. max11871 conforms to the Maxim Touch Protocol
+	  (MTP) defined by Maxim.
+
+	  If unsure, say N.
+
 config TOUCHSCREEN_MCS5000
 	tristate "MELFAS MCS-5000 touchscreen"
 	depends on I2C
@@ -382,6 +392,12 @@ config TOUCHSCREEN_TNETV107X
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called tnetv107x-ts.
+
+config TOUCHSCREEN_SYNAPTICS_I2C_RMI
+	tristate "Synaptics i2c touchscreen"
+	depends on I2C
+	help
+	  This enables support for Synaptics RMI over I2C based touchscreens.
 
 config TOUCHSCREEN_TOUCHRIGHT
 	tristate "Touchright serial touchscreen"
@@ -725,5 +741,52 @@ config TOUCHSCREEN_TPS6507X
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called tps6507x_ts.
+
+config TOUCHSCREEN_CYTTSP_I2C
+       default n
+       tristate "Cypress TTSP i2c touchscreen"
+       depends on I2C
+       help
+         Say Y here if you have a Cypress TTSP touchscreen
+         connected to your system's i2c bus.
+
+         If unsure, say N.
+
+         To compile this driver as a module, choose M here: the
+         module will be called cyttsp_i2c.
+
+config TOUCHSCREEN_CYTTSP_CORE
+       default y
+       tristate "Cypress TTSP touchscreen core"
+       depends on TOUCHSCREEN_CYTTSP_I2C
+       help
+         Always activated for Cypress TTSP touchscreen
+
+config TOUCHSCREEN_ATMEL_MXT224
+	tristate "ATMEL mXT224 touchscreen"
+	depends on I2C
+	default n
+	help
+		Say Y here if you have a mXT224 touchscreen
+		If unsure, say N.
+
+source "drivers/input/touchscreen/rmi/Kconfig"
+          
+config TOUCHSCREEN_ATMEL_MXT224S
+	tristate "ATMEL mXT224S touchscreen"
+	depends on I2C
+	default n
+	help
+		Say Y here if you have a mXT224S touchscreen
+		If unsure, say N.
+
+config TOUCHSCREEN_DEBUG
+	tristate "Enable/Disable debugging in the touchscreen drivers"
+	default n
+	depends on TOUCHSCREEN_CYTTSP3 || TOUCHSCREEN_ATMEL_MXT224S || TOUCHSCREEN_MELFAS100_TS
+	help
+		Say Y here only for Cypress-3, Atmel and Melfas-100 touchscreens.
+		If unsure, say N.
+
 
 endif

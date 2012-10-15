@@ -193,16 +193,6 @@ int __must_check rfkill_register(struct rfkill *rfkill);
 void rfkill_pause_polling(struct rfkill *rfkill);
 
 /**
- * rfkill_resume_polling(struct rfkill *rfkill)
- *
- * Pause polling -- say transmitter is off for other reasons.
- * NOTE: not necessary for suspend/resume -- in that case the
- * core stops polling anyway
- */
-void rfkill_resume_polling(struct rfkill *rfkill);
-
-
-/**
  * rfkill_unregister - Unregister a rfkill structure.
  * @rfkill: rfkill structure to be unregistered
  *
@@ -318,10 +308,6 @@ static inline void rfkill_pause_polling(struct rfkill *rfkill)
 {
 }
 
-static inline void rfkill_resume_polling(struct rfkill *rfkill)
-{
-}
-
 static inline void rfkill_unregister(struct rfkill *rfkill)
 {
 }
@@ -353,6 +339,21 @@ static inline bool rfkill_blocked(struct rfkill *rfkill)
 	return false;
 }
 #endif /* RFKILL || RFKILL_MODULE */
+
+#ifdef CONFIG_RFKILL_PM
+/**
+ * rfkill_resume_polling(struct rfkill *rfkill)
+ *
+ * Pause polling -- say transmitter is off for other reasons.
+ * NOTE: not necessary for suspend/resume -- in that case the
+ * core stops polling anyway
+ */
+void rfkill_resume_polling(struct rfkill *rfkill);
+#else
+static inline void rfkill_resume_polling(struct rfkill *rfkill)
+{
+}
+#endif
 
 #endif /* __KERNEL__ */
 

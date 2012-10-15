@@ -279,13 +279,26 @@ static inline void select_nohz_load_balancer(int stop_tick) { }
 #endif
 
 /*
- * Only dump TASK_* tasks. (0 for all tasks)
+ * Threads filter bitmask.
+ * Bit 0, for kthreads dump.
+ * Bit 1, for userspace threads dump.
+*/
+#define SHOW_KTHREADS   (1 << 0)
+#define SHOW_APP_THREADS        (1 << 1)
+
+/*
+ * Only dump TASK_* and SHOW_* tasks. (0, 3) for all tasks.
  */
-extern void show_state_filter(unsigned long state_filter);
+extern void show_state_filter(unsigned long state_filter,
+				unsigned long threads_filter);
+
+#ifdef CONFIG_EMMC_IPANIC
+extern void emmc_ipanic_stream_emmc(void);
+#endif
 
 static inline void show_state(void)
 {
-	show_state_filter(0);
+	show_state_filter(0, SHOW_KTHREADS | SHOW_APP_THREADS);
 }
 
 extern void show_regs(struct pt_regs *);
@@ -1753,6 +1766,9 @@ static inline void put_task_struct(struct task_struct *t)
 
 extern void task_times(struct task_struct *p, cputime_t *ut, cputime_t *st);
 extern void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st);
+
+extern int task_free_register(struct notifier_block *n);
+extern int task_free_unregister(struct notifier_block *n);
 
 /*
  * Per process flags

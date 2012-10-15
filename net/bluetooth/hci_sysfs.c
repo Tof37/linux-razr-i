@@ -9,6 +9,8 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
+static atomic_t hci_dev_sem[HCI_DEV_SEM_MAX];
+
 static struct class *bt_class;
 
 struct dentry *bt_debugfs;
@@ -88,8 +90,18 @@ static struct device_type bt_link = {
 
 static void add_conn(struct work_struct *work)
 {
-	struct hci_conn *conn = container_of(work, struct hci_conn, work_add);
+	struct hci_conn *conn = container_of(work, struct hci_conn,
+								work_add.work);
 	struct hci_dev *hdev = conn->hdev;
+
+	if (conn->handle < HCI_DEV_SEM_MAX &&
+				atomic_read(&hci_dev_sem[conn->handle])) {
+		queue_delayed_work(conn->hdev->workqueue, &conn->work_add,
+				msecs_to_jiffies(HCI_DEV_SEM_MSEC_DELAY));
+		return;
+	}
+	if (conn->handle < HCI_DEV_SEM_MAX)
+		atomic_set(&hci_dev_sem[conn->handle], 1);
 
 	dev_set_name(&conn->dev, "%s:%d", hdev->name, conn->handle);
 
@@ -97,6 +109,8 @@ static void add_conn(struct work_struct *work)
 
 	if (device_add(&conn->dev) < 0) {
 		BT_ERR("Failed to register connection device");
+		if (conn->handle < HCI_DEV_SEM_MAX)
+			atomic_set(&hci_dev_sem[conn->handle], 0);
 		return;
 	}
 
@@ -135,6 +149,8 @@ static void del_conn(struct work_struct *work)
 	put_device(&conn->dev);
 
 	hci_dev_put(hdev);
+	if (conn->handle < HCI_DEV_SEM_MAX)
+		atomic_set(&hci_dev_sem[conn->handle], 0);
 }
 
 void hci_conn_init_sysfs(struct hci_conn *conn)
@@ -149,7 +165,7 @@ void hci_conn_init_sysfs(struct hci_conn *conn)
 
 	device_initialize(&conn->dev);
 
-	INIT_WORK(&conn->work_add, add_conn);
+	INIT_DELAYED_WORK(&conn->work_add, add_conn);
 	INIT_WORK(&conn->work_del, del_conn);
 }
 
@@ -157,7 +173,8 @@ void hci_conn_add_sysfs(struct hci_conn *conn)
 {
 	BT_DBG("conn %p", conn);
 
-	queue_work(conn->hdev->workqueue, &conn->work_add);
+	queue_delayed_work(conn->hdev->workqueue, &conn->work_add,
+				msecs_to_jiffies(HCI_DEV_SEM_MSEC_DELAY));
 }
 
 void hci_conn_del_sysfs(struct hci_conn *conn)
@@ -511,35 +528,6 @@ static const struct file_operations uuids_fops = {
 	.release	= single_release,
 };
 
-static int auto_accept_delay_set(void *data, u64 val)
-{
-	struct hci_dev *hdev = data;
-
-	hci_dev_lock_bh(hdev);
-
-	hdev->auto_accept_delay = val;
-
-	hci_dev_unlock_bh(hdev);
-
-	return 0;
-}
-
-static int auto_accept_delay_get(void *data, u64 *val)
-{
-	struct hci_dev *hdev = data;
-
-	hci_dev_lock_bh(hdev);
-
-	*val = hdev->auto_accept_delay;
-
-	hci_dev_unlock_bh(hdev);
-
-	return 0;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(auto_accept_delay_fops, auto_accept_delay_get,
-					auto_accept_delay_set, "%llu\n");
-
 int hci_register_sysfs(struct hci_dev *hdev)
 {
 	struct device *dev = &hdev->dev;
@@ -574,8 +562,6 @@ int hci_register_sysfs(struct hci_dev *hdev)
 
 	debugfs_create_file("uuids", 0444, hdev->debugfs, hdev, &uuids_fops);
 
-	debugfs_create_file("auto_accept_delay", 0444, hdev->debugfs, hdev,
-						&auto_accept_delay_fops);
 	return 0;
 }
 
@@ -590,11 +576,15 @@ void hci_unregister_sysfs(struct hci_dev *hdev)
 
 int __init bt_sysfs_init(void)
 {
+	int i;
+
 	bt_debugfs = debugfs_create_dir("bluetooth", NULL);
 
 	bt_class = class_create(THIS_MODULE, "bluetooth");
 	if (IS_ERR(bt_class))
 		return PTR_ERR(bt_class);
+	for (i = 0; i < HCI_DEV_SEM_MAX; i++)
+		atomic_set(&hci_dev_sem[i], 0);
 
 	return 0;
 }

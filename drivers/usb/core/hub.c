@@ -1221,6 +1221,9 @@ static int hub_configure(struct usb_hub *hub,
 	if (hub->has_indicators && blinkenlights)
 		hub->indicator [0] = INDICATOR_CYCLE;
 
+	/* Mandatorily set hub as remote-wakeup enabled */
+	device_set_wakeup_enable(&hdev->dev, true);
+
 	hub_activate(hub, HUB_INIT);
 	return 0;
 
@@ -1614,6 +1617,24 @@ static void hub_free_dev(struct usb_device *udev)
 		hcd->driver->free_dev(hcd, udev);
 }
 
+#ifdef CONFIG_USB_OTG
+
+static void otg_notify(struct usb_device *udev, unsigned action)
+{
+	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
+
+	if (hcd->otg_notify)
+		hcd->otg_notify(udev, action);
+}
+
+#else
+
+static inline void otg_notify(struct usb_device *udev, unsigned action)
+{
+}
+
+#endif
+
 /**
  * usb_disconnect - disconnect a device (usbcore-internal)
  * @pdev: pointer to device being disconnected
@@ -1675,7 +1696,7 @@ void usb_disconnect(struct usb_device **pdev)
 	 * notifier chain (used by usbfs and possibly others).
 	 */
 	device_del(&udev->dev);
-
+	otg_notify(udev, USB_DEVICE_REMOVE);
 	/* Free the device number and delete the parent's children[]
 	 * (or root_hub) pointer.
 	 */
@@ -1758,13 +1779,25 @@ static int usb_enumerate_device_otg(struct usb_device *udev)
 				/* enable HNP before suspend, it's simpler */
 				if (port1 == bus->otg_port)
 					bus->b_hnp_enable = 1;
-				err = usb_control_msg(udev,
-					usb_sndctrlpipe(udev, 0),
-					USB_REQ_SET_FEATURE, 0,
-					bus->b_hnp_enable
+
+				/* A_ALT_HNP_SUPPORT is obsolete in OTG 2.0 */
+				if (desc->bcdOTG >= 0x0200 && bus->b_hnp_enable)
+					err = usb_control_msg(udev,
+						usb_sndctrlpipe(udev, 0),
+						USB_REQ_SET_FEATURE, 0,
+						USB_DEVICE_B_HNP_ENABLE,
+						0, NULL, 0,
+						USB_CTRL_SET_TIMEOUT);
+				else if (desc->bcdOTG < 0x0200)
+					err = usb_control_msg(udev,
+						usb_sndctrlpipe(udev, 0),
+						USB_REQ_SET_FEATURE, 0,
+						bus->b_hnp_enable
 						? USB_DEVICE_B_HNP_ENABLE
 						: USB_DEVICE_A_ALT_HNP_SUPPORT,
-					0, NULL, 0, USB_CTRL_SET_TIMEOUT);
+						0, NULL, 0,
+						USB_CTRL_SET_TIMEOUT);
+
 				if (err < 0) {
 					/* OTG MESSAGE: report errors here,
 					 * customize to match your product.
@@ -1901,6 +1934,7 @@ int usb_new_device(struct usb_device *udev)
 	 * notifier chain (used by usbfs and possibly others).
 	 */
 	err = device_add(&udev->dev);
+	otg_notify(udev, USB_DEVICE_ADD);
 	if (err) {
 		dev_err(&udev->dev, "can't device_add, error %d\n", err);
 		goto fail;
@@ -2962,6 +2996,9 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 				dev_err(&udev->dev,
 					"device descriptor read/64, error %d\n",
 					r);
+				if (r == -ETIMEDOUT)
+					usb_notify_warning(udev,
+						USB_WARNING_NO_RESPONSE);
 				retval = -EMSGSIZE;
 				continue;
 			}
@@ -3142,6 +3179,16 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 			le16_to_cpu(hub->descriptor->wHubCharacteristics);
 	struct usb_device *udev;
 	int status, i;
+
+#ifdef CONFIG_USB_SUSPEND
+	/* add 5s time-out wakelock for delay system suspend */
+	if (hcd->wake_lock) {
+		wake_lock_timeout(hcd->wake_lock, 5 * HZ);
+		dev_dbg(hub_dev,
+		"%s add 5s wake_lock for port connect change\n",
+		__func__);
+	}
+#endif
 
 	dev_dbg (hub_dev,
 		"port %d, status %04x, change %04x, %s\n",

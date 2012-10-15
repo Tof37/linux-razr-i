@@ -493,8 +493,21 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 		fb_set_logo(info, logo, logo_new, fb_logo.depth);
 	}
 
+#ifdef CONFIG_LOGO_CENTERED
+        /*
+          At IAFW side, the framebuffer resolution is 608x1024, but the scrren
+          size is 600x1024, IAFW draw logo framebuffer centered, not scrren
+          centered, so we need this 4-pixels shift workaround to make sure
+          linux draw logo at the same posotion with IAFW.
+          This workaround just for demo, should be removed when IAFW fix the issue.
+        */
+	#define LOGO_SHIFT 4
+	image.dx = LOGO_SHIFT + (info->var.xres - (n * logo->width)) / 2;
+	image.dy = (info->var.yres - logo->height) / 2;
+#else
 	image.dx = 0;
 	image.dy = y;
+#endif
 	image.width = logo->width;
 	image.height = logo->height;
 
@@ -729,7 +742,12 @@ static struct fb_info *file_fb_info(struct file *file)
 {
 	struct inode *inode = file->f_path.dentry->d_inode;
 	int fbidx = iminor(inode);
-	struct fb_info *info = registered_fb[fbidx];
+	struct fb_info *info = (struct fb_info *)NULL;
+
+	if (fbidx >= (sizeof(registered_fb) / sizeof(registered_fb[0])))
+		return (struct fb_info *)NULL;
+
+	info = registered_fb[fbidx];
 
 	if (info != file->private_data)
 		info = NULL;
@@ -1623,6 +1641,11 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 
 	fb_var_to_videomode(&mode, &fb_info->var);
 	fb_add_videomode(&mode, &fb_info->modelist);
+
+	/* KW issue 115161 */
+	if (i >= (sizeof(registered_fb) / sizeof(registered_fb[0]))) {
+		return -EINVAL;
+	} else {
 	registered_fb[i] = fb_info;
 
 	event.info = fb_info;
@@ -1630,6 +1653,7 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 		return -ENODEV;
 	fb_notifier_call_chain(FB_EVENT_FB_REGISTERED, &event);
 	unlock_fb_info(fb_info);
+	}
 	return 0;
 }
 

@@ -43,6 +43,7 @@
 #include <asm/system.h>
 #include <asm/ldt.h>
 #include <asm/processor.h>
+#include <asm/processor-flags.h>
 #include <asm/i387.h>
 #include <asm/desc.h>
 #ifdef CONFIG_MATH_EMULATION
@@ -98,6 +99,7 @@ void cpu_idle(void)
 	/* endless idle loop with no priority at all */
 	while (1) {
 		tick_nohz_stop_sched_tick(1);
+		idle_notifier_call_chain(IDLE_START);
 		while (!need_resched()) {
 
 			check_pgt_cache();
@@ -107,16 +109,102 @@ void cpu_idle(void)
 				play_dead();
 
 			local_irq_disable();
+			idle_notifier_call_chain(IDLE_START);
 			/* Don't trace irqs off for idle */
 			stop_critical_timings();
 			pm_idle();
 			start_critical_timings();
+			idle_notifier_call_chain(IDLE_END);
 		}
+		idle_notifier_call_chain(IDLE_END);
 		tick_nohz_restart_sched_tick();
 		preempt_enable_no_resched();
 		schedule();
 		preempt_disable();
 	}
+}
+
+/*
+ * dump a block of kernel memory from around the given address
+ */
+static void show_data(unsigned long addr, int nbytes, const char *name)
+{
+	int	i, j;
+	int	nlines;
+	u32	*p;
+
+	/*
+	 * don't attempt to dump non-kernel addresses or
+	 * values that are probably just small negative numbers
+	 */
+	if (addr < PAGE_OFFSET || addr > -256UL)
+		return;
+
+	printk("\n%s: %#lx:\n", name, addr);
+
+	/*
+	 * round address down to a 32 bit boundary
+	 * and always dump a multiple of 32 bytes
+	 */
+	p = (u32 *)(addr & ~(sizeof(u32) - 1));
+	nbytes += (addr & (sizeof(u32) - 1));
+	nlines = (nbytes + 31) / 32;
+
+
+	for (i = 0; i < nlines; i++) {
+		/*
+		 * just display low 16 bits of address to keep
+		 * each line of the dump < 80 characters
+		 */
+		printk("%04lx ", (unsigned long)p & 0xffff);
+		for (j = 0; j < 8; j++) {
+			u32	data;
+			if (in_nmi() || probe_kernel_address(p, data)) {
+				printk(" ********");
+			} else {
+				printk(" %08x", data);
+			}
+			++p;
+		}
+		printk("\n");
+	}
+}
+
+static void __show_extra_register_data(struct pt_regs *regs, int nbytes)
+{
+	mm_segment_t fs;
+	unsigned long sp;
+
+	if (user_mode_vm(regs))
+		sp = regs->sp;
+	else
+		sp = kernel_stack_pointer(regs);
+
+	fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	show_data(regs->ip - nbytes, nbytes * 2, "EIP");
+	show_data(regs->ax - nbytes, nbytes * 2, "EAX");
+	show_data(regs->bx - nbytes, nbytes * 2, "EBX");
+	show_data(regs->cx - nbytes, nbytes * 2, "ECX");
+	show_data(regs->dx - nbytes, nbytes * 2, "EDX");
+	show_data(regs->si - nbytes, nbytes * 2, "ESI");
+	show_data(regs->di - nbytes, nbytes * 2, "EDI");
+	show_data(regs->bp - nbytes, nbytes * 2, "EBP");
+	show_data(sp - nbytes, nbytes * 2, "ESP");
+
+	set_fs(fs);
+}
+
+void show_eflags(unsigned long eflags)
+{
+	printk(KERN_DEFAULT "Trap Flag: %s Interrupt Flag: %s IOPL mask: %x",
+		eflags & X86_EFLAGS_TF?"On":"Off",
+		eflags & X86_EFLAGS_IF?"On":"Off",
+		eflags & X86_EFLAGS_IOPL>>12);
+        printk(KERN_DEFAULT "Virtual Interrupt [1] Flag: %s [2] Pending: %s",
+		eflags & X86_EFLAGS_VIF?"On":"Off",
+		eflags & X86_EFLAGS_VIP?"On":"Off");
 }
 
 void __show_regs(struct pt_regs *regs, int all)
@@ -125,6 +213,8 @@ void __show_regs(struct pt_regs *regs, int all)
 	unsigned long d0, d1, d2, d3, d6, d7;
 	unsigned long sp;
 	unsigned short ss, gs;
+	u32 data;
+	u32 *p;
 
 	if (user_mode_vm(regs)) {
 		sp = regs->sp;
@@ -141,7 +231,12 @@ void __show_regs(struct pt_regs *regs, int all)
 	printk(KERN_DEFAULT "EIP: %04x:[<%08lx>] EFLAGS: %08lx CPU: %d\n",
 			(u16)regs->cs, regs->ip, regs->flags,
 			smp_processor_id());
+
 	print_symbol("EIP is at %s\n", regs->ip);
+
+	p = (u32 *)((regs->bp + 4) & ~(sizeof(u32) - 1));
+	if (!in_nmi() && !probe_kernel_address(p, data))
+		print_symbol("EBP is at %s\n", data);
 
 	printk(KERN_DEFAULT "EAX: %08lx EBX: %08lx ECX: %08lx EDX: %08lx\n",
 		regs->ax, regs->bx, regs->cx, regs->dx);
@@ -149,6 +244,10 @@ void __show_regs(struct pt_regs *regs, int all)
 		regs->si, regs->di, regs->bp, sp);
 	printk(KERN_DEFAULT " DS: %04x ES: %04x FS: %04x GS: %04x SS: %04x\n",
 	       (u16)regs->ds, (u16)regs->es, (u16)regs->fs, gs, ss);
+
+	show_eflags(regs->flags);
+
+	__show_extra_register_data(regs, 128);
 
 	if (!all)
 		return;

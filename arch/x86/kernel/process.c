@@ -403,8 +403,18 @@ void default_idle(void)
 EXPORT_SYMBOL(default_idle);
 #endif
 
+static DEFINE_RAW_SPINLOCK(stop_lock);
 void stop_this_cpu(void *dummy)
 {
+	if (system_state == SYSTEM_BOOTING ||
+		system_state == SYSTEM_RUNNING) {
+			raw_spin_lock(&stop_lock);
+			printk(KERN_CRIT "CPU%u: stopping\n",
+						smp_processor_id());
+			dump_stack();
+			raw_spin_unlock(&stop_lock);
+	}
+
 	local_irq_disable();
 	/*
 	 * Remove this CPU:

@@ -13,7 +13,7 @@ config X86_32
 config X86_64
 	def_bool 64BIT
 
-### Arch settings
+### Arch settingsendc
 config X86
 	def_bool y
 	select HAVE_AOUT if X86_32
@@ -384,18 +384,42 @@ config X86_INTEL_CE
 	  This option compiles in support for the CE4100 SOC for settop
 	  boxes and media devices.
 
+config X86_INTEL_MID
+	bool "Intel MID platform support"
+	depends on X86_32
+	depends on X86_EXTENDED_PLATFORM
+	---help---
+	  Select to build a kernel capable of supporting Intel MID platform
+	  systems which do not have the PCI legacy interfaces (Moorestown,
+	  Medfield). If you are building for a PC class system say N here.
+
+if X86_INTEL_MID
+
+config HARDIRQS_SW_RESEND
+	bool
+	default y
+
+config INTEL_MID_RAM_CONSOLE
+	bool "Enable intel MID support for Android RAM console"
+	depends on ANDROID_RAM_CONSOLE
+	----help---
+	 Select this option to enable Android RAM console support on Intel MID
+	 This allows saving the kernel printk message to a buffer in RAM,so
+	 that after a kernel panic they can be viewed in the next kernel
+	 invocation, by accessing /proc/last_kmsg
+	 NOTE: Board file needs to invoke relevant api to enable the support
+
 config X86_MRST
        bool "Moorestown MID platform"
 	depends on PCI
 	depends on PCI_GOANY
-	depends on X86_32
-	depends on X86_EXTENDED_PLATFORM
 	depends on X86_IO_APIC
 	select APB_TIMER
 	select I2C
 	select SPI
 	select INTEL_SCU_IPC
 	select X86_PLATFORM_DEVICES
+	select HARDIRQS_SW_RESEND
 	---help---
 	  Moorestown is Intel's Low Power Intel Architecture (LPIA) based Moblin
 	  Internet Device(MID) platform. Moorestown consists of two chips:
@@ -403,6 +427,107 @@ config X86_MRST
 	  Unlike standard x86 PCs, Moorestown does not have many legacy devices
 	  nor standard legacy replacement devices/features. e.g. Moorestown does
 	  not contain i8259, i8254, HPET, legacy BIOS, most of the io ports.
+
+config X86_MDFLD
+       bool "Medfield MID platform"
+	depends on PCI
+	depends on PCI_GOANY
+	depends on X86_IO_APIC
+	select APB_TIMER
+	select I2C
+	select SPI
+	select INTEL_SCU_IPC
+	select X86_PLATFORM_DEVICES
+	---help---
+	  Medfield is Intel's Low Power Intel Architecture (LPIA) based Moblin
+	  Internet Device(MID) platform. 
+	  Unlike standard x86 PCs, Medfield does not have many legacy devices
+	  nor standard legacy replacement devices/features. e.g. Medfield does
+	  not contain i8259, i8254, HPET, legacy BIOS, most of the io ports.
+
+config X86_MRFLD
+	bool "Merrifield MID platform"
+	depends on PCI
+	depends on PCI_GOANY
+	depends on X86_IO_APIC
+	select INTEL_SCU_IPC
+	select X86_PLATFORM_DEVICES
+	---help---
+	  Merrifield is Intel's Low Power Intel Architecture (LPIA) based Moblin
+	  Internet Device(MID) platform.
+	  Unlike Medfield, Merrifield does have many legacy devices supported
+	  by the iLB unit. That includes i8259, i8254, HPET, ACPI, and RTC.
+
+choice
+	prompt "Intel MID board type"
+	depends on X86_INTEL_MID
+	---help---
+	  This option is used for selecting the board configuration of
+	  Intel mobile devices.
+	  You should select the board name that matches your hardware
+          configuration.
+#
+# Board-Blackbay
+#
+
+config BOARD_MFLD_BLACKBAY
+	bool "Medfield board type"
+	depends on X86_MDFLD
+	---help---
+	  Medfield based board configuration.Say yes here
+	  if your device falls under blackbay board
+	  type.Devices like PR2/PR3 falls under this
+	  category.
+
+config BOARD_REDRIDGE
+	bool "Medfield redridge board type"
+	depends on X86_MDFLD
+	default n
+	---help---
+	  Medfield based board configuration.Say yes here if your
+	  device falls under Redridge board type.
+
+#
+# Motorola Medfield-based Products
+#
+config BOARD_MFLD_MOTO
+	bool "Support Motorola's Medfield-based products"
+	depends on X86_MDFLD
+	default n
+	---help---
+	  Medfield based board configuration for Motorola devices. Say yes
+	  here if your device falls under the Motorola umbrella.
+
+config BOARD_CTP
+	bool "Clovertrail board type"
+	depends on X86_MDFLD
+	default n
+	---help---
+	  Clovertrail board type is special.
+	  We use Medfield Soc file for Clovertrail but define a new
+	  board file for Clovertrail. That's because Clovertrail Soc
+	  shares all the codes with Medfield except the board file(i.e.
+	  only platform devices and platform device data are different)
+
+config BOARD_MRFLD_VP
+	bool "Merrifield simulation platform board type"
+	depends on X86_MRFLD
+	---help---
+	  Merrifield based simulation configuration. This includes:
+	  VP, HVP, SLE targets.
+
+config BOARD_MRFLD_HVP
+	bool "Merrifield Hybrid Virtual Platform (HVP) board type"
+	depends on X86_MRFLD
+	default n
+	---help---
+	  Merrifield HVP integrates a functionally equlvalent software.
+	  model of the Merrifield North Cluster interface to the FPGA
+	  implementation of the TNG South Cluster RTL in the Cypress
+	  River (CR4) Board.
+endchoice
+
+endif
 
 config X86_RDC321X
 	bool "RDC R-321x SoC"
@@ -615,8 +740,8 @@ config HPET_EMULATE_RTC
 	depends on HPET_TIMER && (RTC=y || RTC=m || RTC_DRV_CMOS=m || RTC_DRV_CMOS=y)
 
 config APB_TIMER
-       def_bool y if MRST
-       prompt "Langwell APB Timer Support" if X86_MRST
+       def_bool y if X86_INTEL_MID
+       prompt "Intel MID platform APB Timer Support" if X86_INTEL_MID
        help
          APB timer is the replacement for 8254, HPET on X86 MID platforms.
          The APBT provides a stable time base on SMP
@@ -1689,6 +1814,14 @@ config CMDLINE_OVERRIDE
 	  This is used to work around broken boot loaders.  This should
 	  be set to 'N' under normal conditions.
 
+config BOOTINFO
+	bool "Boot Information Feature"
+	default n
+	help
+		This feature provides access to certain boot information
+		from both kernel context (via function call) and user
+		context (via /proc/bootinfo).
+
 endmenu
 
 config ARCH_ENABLE_MEMORY_HOTPLUG
@@ -1846,8 +1979,26 @@ source "drivers/cpuidle/Kconfig"
 
 source "drivers/idle/Kconfig"
 
-endmenu
+config ATOM_SOC_POWER
+	def_bool y
+	depends on INTEL_ATOM_MDFLD_POWER || INTEL_ATOM_CLV_POWER || INTEL_ATOM_MRFLD_POWER
 
+config INTEL_ATOM_MDFLD_POWER
+	bool "Power Management driver for Intel medfield platform"
+	depends on PCI && CPU_IDLE && X86_MDFLD
+	select ATOM_SOC_POWER
+	---help---
+	Power management driver for medfield Platform.
+	If you don't know what to do here, say N.
+
+config INTEL_ATOM_CLV_POWER
+	bool "Power Management driver for Intel cloverview platform"
+	depends on PCI && CPU_IDLE && PM_RUNTIME && PM_SLEEP && X86_MDFLD
+	select ATOM_SOC_POWER
+	---help---
+	Power management driver for cloverview Platform.
+	If you don't know what to do here, say N.
+endmenu
 
 menu "Bus options (PCI etc.)"
 

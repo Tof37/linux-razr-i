@@ -144,6 +144,40 @@ struct tun_sock {
 	struct tun_struct	*tun;
 };
 
+/* Register a proc file tun-status to allow this
+ * device being controled from user-space */
+#ifdef CONFIG_SYSCTL
+static struct ctl_table_header *tun_sysctl_header;
+/* tun_status represents the enable/disable status of TUN/TAP
+ * 1 = enabled, 0 = disabled
+ */
+static int tun_status __read_mostly = 1;
+#else
+#define tun_status 1
+#endif
+
+#ifdef CONFIG_SYSCTL
+static int tun_sysctl_call(ctl_table *ctl, int write,
+			    void __user *buffer, size_t *lenp, loff_t *ppos);
+
+static ctl_table tun_table[] = {
+	{
+		.procname	= "tun-status",
+		.data		= &tun_status,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= tun_sysctl_call,
+	},
+	{ }
+};
+
+static struct ctl_path tun_path[] = {
+	{ .procname = "net", },
+	{ .procname = "tun", },
+	{ }
+};
+#endif
+
 static inline struct tun_sock *tun_sk(struct sock *sk)
 {
 	return container_of(sk, struct tun_sock, sk);
@@ -742,6 +776,9 @@ static ssize_t tun_chr_aio_write(struct kiocb *iocb, const struct iovec *iv,
 	if (!tun)
 		return -EBADFD;
 
+	if (!tun_status)
+		return -EINVAL;
+
 	tun_debug(KERN_INFO, tun, "tun_chr_write %ld\n", count);
 
 	result = tun_get_user(tun, iv, iov_length(iv, count),
@@ -886,6 +923,10 @@ static ssize_t tun_chr_aio_read(struct kiocb *iocb, const struct iovec *iv,
 
 	if (!tun)
 		return -EBADFD;
+
+	if (!tun_status)
+		return -EINVAL;
+
 	len = iov_length(iv, count);
 	if (len < 0) {
 		ret = -EINVAL;
@@ -1239,6 +1280,12 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 	int vnet_hdr_sz;
 	int ret;
 
+#ifdef CONFIG_ANDROID_PARANOID_NETWORK
+	if (cmd != TUNGETIFF && !capable(CAP_NET_ADMIN)) {
+		return -EPERM;
+	}
+#endif
+
 	if (cmd == TUNSETIFF || _IOC_TYPE(cmd) == 0x89)
 		if (copy_from_user(&ifr, argp, ifreq_len))
 			return -EFAULT;
@@ -1498,6 +1545,12 @@ static int tun_chr_open(struct inode *inode, struct file * file)
 
 	DBG1(KERN_INFO, "tunX: tun_chr_open\n");
 
+	if (!tun_status) {
+		DBG1(KERN_WARNING,
+			"tunX: tun_chr_open failed, due to policy control\n");
+		return -EINVAL;
+	}
+
 	tfile = kmalloc(sizeof(*tfile), GFP_KERNEL);
 	if (!tfile)
 		return -ENOMEM;
@@ -1625,6 +1678,19 @@ static const struct ethtool_ops tun_ethtool_ops = {
 	.get_link	= ethtool_op_get_link,
 };
 
+#ifdef CONFIG_SYSCTL
+static
+int tun_sysctl_call(ctl_table *ctl, int write, void __user *buffer,
+		size_t *lenp, loff_t *ppos)
+{
+	int ret = 0;
+
+	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+	if (write && *(int *)(ctl->data))
+		*(int *)(ctl->data) = 1;
+	return ret;
+}
+#endif
 
 static int __init tun_init(void)
 {
@@ -1644,7 +1710,18 @@ static int __init tun_init(void)
 		pr_err("Can't register misc device %d\n", TUN_MINOR);
 		goto err_misc;
 	}
+
+#ifdef CONFIG_SYSCTL
+	tun_sysctl_header = register_sysctl_paths(tun_path, tun_table);
+	if (tun_sysctl_header == NULL) {
+		pr_err("Can't register sysctl for TUN/TAP %d\n", TUN_MINOR);
+		goto err_sysctl;
+	}
+#endif
 	return  0;
+
+err_sysctl:
+	misc_deregister(&tun_miscdev);
 err_misc:
 	rtnl_link_unregister(&tun_link_ops);
 err_linkops:

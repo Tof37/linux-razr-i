@@ -235,6 +235,8 @@ void usbnet_skb_return (struct usbnet *dev, struct sk_buff *skb)
 	dev->net->stats.rx_packets++;
 	dev->net->stats.rx_bytes += skb->len;
 
+	dev->net->last_packet_time = jiffies;
+
 	netif_dbg(dev, rx_status, dev->net, "< rx, len %zu, type 0x%x\n",
 		  skb->len + sizeof (struct ethhdr), skb->protocol);
 	memset (skb->cb, 0, sizeof (struct skb_data));
@@ -987,6 +989,8 @@ static void tx_complete (struct urb *urb)
 		if (!(dev->driver_info->flags & FLAG_MULTI_PACKET))
 			dev->net->stats.tx_packets++;
 		dev->net->stats.tx_bytes += entry->length;
+
+		dev->net->last_packet_time = jiffies;
 	} else {
 		dev->net->stats.tx_errors++;
 

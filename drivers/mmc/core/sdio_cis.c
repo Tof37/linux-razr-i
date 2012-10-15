@@ -15,6 +15,7 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/ratelimit.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
@@ -313,14 +314,20 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 
 			if (ret == -ENOENT) {
 				/* warn about unknown tuples */
-				printk(KERN_WARNING "%s: queuing unknown"
+				printk_ratelimited(
+					KERN_WARNING "%s: queuing unknown"
 				       " CIS tuple 0x%02x (%u bytes)\n",
 				       mmc_hostname(card->host),
 				       tpl_code, tpl_link);
 			}
 
-			/* keep on analyzing tuples */
-			ret = 0;
+			/* keep on analyzing tuples, except if 0x0a */
+			if (tpl_code == 0x0a) {
+				printk(KERN_WARNING "Aborting card "
+				"detection due to unexpected tuple\n");
+				break;
+			} else
+				ret = 0;
 		} else {
 			/*
 			 * We don't need the tuple anymore if it was

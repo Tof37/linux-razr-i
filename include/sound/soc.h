@@ -200,7 +200,8 @@
 	struct soc_enum name = SOC_VALUE_ENUM_DOUBLE(xreg, xshift_l, xshift_r, xmask, \
 							ARRAY_SIZE(xtexts), xtexts, xvalues)
 #define SOC_VALUE_ENUM_SINGLE_DECL(name, xreg, xshift, xmask, xtexts, xvalues) \
-	SOC_VALUE_ENUM_DOUBLE_DECL(name, xreg, xshift, xshift, xmask, xtexts, xvalues)
+	SOC_VALUE_ENUM_DOUBLE_DECL(name, xreg, xshift, xshift, xmask, xtexts,\
+					xvalues)
 
 /*
  * Bias levels
@@ -243,7 +244,7 @@ struct snd_soc_cache_ops;
 struct snd_soc_jack_gpio;
 #endif
 
-typedef int (*hw_write_t)(void *,const char* ,int);
+typedef int (*hw_write_t)(void *, const char*, int);
 
 extern struct snd_ac97_bus_ops soc_ac97_ops;
 
@@ -257,6 +258,12 @@ enum snd_soc_compress_type {
 	SND_SOC_LZO_COMPRESSION,
 	SND_SOC_RBTREE_COMPRESSION
 };
+
+enum snd_soc_pcm_subclass {
+	SND_SOC_PCM_CLASS_PCM   = 0,
+	SND_SOC_PCM_CLASS_BE    = 1,
+};
+
 
 int snd_soc_codec_set_sysclk(struct snd_soc_codec *codec, int clk_id,
 			     unsigned int freq, int dir);
@@ -274,6 +281,7 @@ void snd_soc_unregister_platform(struct device *dev);
 int snd_soc_register_codec(struct device *dev,
 		const struct snd_soc_codec_driver *codec_drv,
 		struct snd_soc_dai_driver *dai_drv, int num_dai);
+int snd_soc_codec_set_params(struct snd_soc_codec *codec, unsigned int param);
 void snd_soc_unregister_codec(struct device *dev);
 int snd_soc_codec_volatile_register(struct snd_soc_codec *codec,
 				    unsigned int reg);
@@ -348,6 +356,8 @@ struct snd_kcontrol *snd_soc_cnew(const struct snd_kcontrol_new *_template,
 				  void *data, char *long_name,
 				  const char *prefix);
 int snd_soc_add_controls(struct snd_soc_codec *codec,
+	const struct snd_kcontrol_new *controls, int num_controls);
+int snd_soc_add_platform_controls(struct snd_soc_platform *platform,
 	const struct snd_kcontrol_new *controls, int num_controls);
 int snd_soc_info_enum_double(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_info *uinfo);
@@ -606,12 +616,16 @@ struct snd_soc_codec_driver {
 	const struct snd_soc_reg_access *reg_access_default;
 	enum snd_soc_compress_type compress_type;
 
+	int (*set_params)(struct snd_soc_codec *codec, unsigned int param);
+
 	/* codec bias level */
 	int (*set_bias_level)(struct snd_soc_codec *,
 			      enum snd_soc_bias_level level);
-
 	void (*seq_notifier)(struct snd_soc_dapm_context *,
 			     enum snd_soc_dapm_type, int);
+
+	/* codec stream completion event */
+	int (*stream_event)(struct snd_soc_dapm_context *, int level);
 };
 
 /* SoC platform interface */
@@ -623,8 +637,7 @@ struct snd_soc_platform_driver {
 	int (*resume)(struct snd_soc_dai *dai);
 
 	/* pcm creation and destruction */
-	int (*pcm_new)(struct snd_card *, struct snd_soc_dai *,
-		struct snd_pcm *);
+	int (*pcm_new)(struct snd_soc_pcm_runtime *);
 	void (*pcm_free)(struct snd_pcm *);
 
 	/*
@@ -666,6 +679,9 @@ struct snd_soc_dai_link {
 
 	/* Symmetry requirements */
 	unsigned int symmetric_rates:1;
+
+	/* ignore dapm power down delay */
+	unsigned int ignore_pmdown_time:1;
 
 	/* codec/machine specific init - e.g. add machine controls */
 	int (*init)(struct snd_soc_pcm_runtime *rtd);
@@ -789,6 +805,9 @@ struct snd_soc_pcm_runtime  {
 	struct device dev;
 	struct snd_soc_card *card;
 	struct snd_soc_dai_link *dai_link;
+	struct mutex pcm_mutex;
+	enum snd_soc_pcm_subclass pcm_subclass;
+	struct snd_pcm_ops ops;
 
 	unsigned int complete:1;
 	unsigned int dev_registered:1;

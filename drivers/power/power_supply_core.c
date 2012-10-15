@@ -25,6 +25,14 @@ EXPORT_SYMBOL_GPL(power_supply_class);
 
 static struct device_type power_supply_dev_type;
 
+static struct mutex ps_chrg_evt_lock;
+
+static struct power_supply_charger_cap power_supply_chrg_cap = {
+		.chrg_evt	= POWER_SUPPLY_CHARGER_EVENT_DISCONNECT,
+		.chrg_type	= POWER_SUPPLY_TYPE_USB,
+		.mA		= 0	/* 0 mA */
+};
+
 static int __power_supply_changed_work(struct device *dev, void *data)
 {
 	struct power_supply *psy = (struct power_supply *)data;
@@ -41,26 +49,74 @@ static int __power_supply_changed_work(struct device *dev, void *data)
 
 static void power_supply_changed_work(struct work_struct *work)
 {
+	unsigned long flags;
 	struct power_supply *psy = container_of(work, struct power_supply,
 						changed_work);
 
 	dev_dbg(psy->dev, "%s\n", __func__);
 
-	class_for_each_device(power_supply_class, NULL, psy,
-			      __power_supply_changed_work);
+	spin_lock_irqsave(&psy->changed_lock, flags);
+	if (psy->changed) {
+		psy->changed = false;
+		spin_unlock_irqrestore(&psy->changed_lock, flags);
 
-	power_supply_update_leds(psy);
+		class_for_each_device(power_supply_class, NULL, psy,
+				      __power_supply_changed_work);
 
-	kobject_uevent(&psy->dev->kobj, KOBJ_CHANGE);
+		power_supply_update_leds(psy);
+
+		kobject_uevent(&psy->dev->kobj, KOBJ_CHANGE);
+		spin_lock_irqsave(&psy->changed_lock, flags);
+	}
+	if (!psy->changed)
+		wake_unlock(&psy->work_wake_lock);
+	spin_unlock_irqrestore(&psy->changed_lock, flags);
 }
 
 void power_supply_changed(struct power_supply *psy)
 {
+	unsigned long flags;
+
 	dev_dbg(psy->dev, "%s\n", __func__);
 
+	spin_lock_irqsave(&psy->changed_lock, flags);
+	psy->changed = true;
+	wake_lock(&psy->work_wake_lock);
+	spin_unlock_irqrestore(&psy->changed_lock, flags);
 	schedule_work(&psy->changed_work);
 }
 EXPORT_SYMBOL_GPL(power_supply_changed);
+
+static int __power_supply_charger_event(struct device *dev, void *data)
+{
+	struct power_supply_charger_cap *cap =
+				(struct power_supply_charger_cap *)data;
+	struct power_supply *psy = dev_get_drvdata(dev);
+
+	if (psy->charging_port_changed)
+		psy->charging_port_changed(psy, cap);
+
+	return 0;
+}
+
+void power_supply_charger_event(struct power_supply_charger_cap cap)
+{
+	class_for_each_device(power_supply_class, NULL, &cap,
+				      __power_supply_charger_event);
+
+	mutex_lock(&ps_chrg_evt_lock);
+	memcpy(&power_supply_chrg_cap, &cap, sizeof(power_supply_chrg_cap));
+	mutex_unlock(&ps_chrg_evt_lock);
+}
+EXPORT_SYMBOL_GPL(power_supply_charger_event);
+
+void power_supply_query_charger_caps(struct power_supply_charger_cap *cap)
+{
+	mutex_lock(&ps_chrg_evt_lock);
+	memcpy(cap, &power_supply_chrg_cap, sizeof(power_supply_chrg_cap));
+	mutex_unlock(&ps_chrg_evt_lock);
+}
+EXPORT_SYMBOL_GPL(power_supply_query_charger_caps);
 
 static int __power_supply_am_i_supplied(struct device *dev, void *data)
 {
@@ -181,6 +237,9 @@ int power_supply_register(struct device *parent, struct power_supply *psy)
 	if (rc)
 		goto device_add_failed;
 
+	spin_lock_init(&psy->changed_lock);
+	wake_lock_init(&psy->work_wake_lock, WAKE_LOCK_SUSPEND, "power-supply");
+
 	rc = power_supply_create_triggers(psy);
 	if (rc)
 		goto create_triggers_failed;
@@ -190,6 +249,7 @@ int power_supply_register(struct device *parent, struct power_supply *psy)
 	goto success;
 
 create_triggers_failed:
+	wake_lock_destroy(&psy->work_wake_lock);
 	device_del(dev);
 kobject_set_name_failed:
 device_add_failed:
@@ -203,6 +263,7 @@ void power_supply_unregister(struct power_supply *psy)
 {
 	cancel_work_sync(&psy->changed_work);
 	power_supply_remove_triggers(psy);
+	wake_lock_destroy(&psy->work_wake_lock);
 	device_unregister(psy->dev);
 }
 EXPORT_SYMBOL_GPL(power_supply_unregister);
@@ -216,6 +277,7 @@ static int __init power_supply_class_init(void)
 
 	power_supply_class->dev_uevent = power_supply_uevent;
 	power_supply_init_attrs(&power_supply_dev_type);
+	mutex_init(&ps_chrg_evt_lock);
 
 	return 0;
 }

@@ -193,6 +193,17 @@ config INPUT_ATI_REMOTE2
 	  To compile this driver as a module, choose M here: the module will be
 	  called ati_remote2.
 
+config INPUT_KEYCHORD
+	tristate "Key chord input driver support"
+	help
+	  Say Y here if you want to enable the key chord driver
+	  accessible at /dev/keychord.  This driver can be used
+	  for receiving notifications when client specified key
+	  combinations are pressed.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called keychord.
+
 config INPUT_KEYSPAN_REMOTE
 	tristate "Keyspan DMR USB remote control (EXPERIMENTAL)"
 	depends on EXPERIMENTAL
@@ -275,6 +286,16 @@ config INPUT_TWL4030_VIBRA
 	  To compile this driver as a module, choose M here. The module will
 	  be called twl4030_vibra.
 
+config INPUT_INTEL_MID_VIBRA
+	tristate "Support for Intel MID Vibrator"
+	depends on SND_INTEL_SST
+	help
+	This option enables support for Intel Mid Vibrator Driver. Say Y
+	here if you want to enable the vibrator functionality for CTP
+
+	To compile this driver as a module, choose M here. The module will
+	be called intel_mid_vibra.
+
 config INPUT_UINPUT
 	tristate "User level driver support"
 	help
@@ -293,6 +314,11 @@ config INPUT_SGI_BTNS
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called sgi_btns.
+
+config INPUT_GPIO
+	tristate "GPIO driver support"
+	help
+	  Say Y here if you want to support gpio based keys, wheels etc...
 
 config HP_SDC_RTC
 	tristate "HP SDC Real Time Clock"
@@ -477,5 +503,24 @@ config INPUT_XEN_KBDDEV_FRONTEND
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called xen-kbdfront.
+
+config INPUT_CT406
+        tristate "CT406 ALS & IR Sensor"
+        default n
+        help
+          Say Y here if you wish to include support for the CT406 ALS
+          and IR sensor.
+
+          If unsure, say N.
+
+config INPUT_LTR301ALS
+	bool "Lite-on ltr301 ambient light sensor"
+	depends on I2C
+	help
+	  This driver provides support for the Lite-on ltr301 ambient light
+	  sensor connected to an I2C bus.
+
+	  Driver supports setting thresholds to hi_tresh and lo_tresh
+	  sysfs entries.
 
 endif

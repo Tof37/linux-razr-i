@@ -49,6 +49,7 @@ static unsigned char vmcoreinfo_data[VMCOREINFO_BYTES];
 u32 vmcoreinfo_note[VMCOREINFO_NOTE_SIZE/4];
 size_t vmcoreinfo_size;
 size_t vmcoreinfo_max_size = sizeof(vmcoreinfo_data);
+bool kexec_in_progress;
 
 /* Location of the reserved area for the crash kernel */
 struct resource crashk_res = {
@@ -1504,6 +1505,8 @@ int kernel_kexec(void)
 		goto Unlock;
 	}
 
+	kexec_in_progress = true;
+
 #ifdef CONFIG_KEXEC_JUMP
 	if (kexec_image->preserve_context) {
 		mutex_lock(&pm_mutex);
@@ -1564,6 +1567,7 @@ int kernel_kexec(void)
 #endif
 
  Unlock:
+	kexec_in_progress = false;
 	mutex_unlock(&kexec_mutex);
 	return error;
 }

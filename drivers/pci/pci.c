@@ -58,7 +58,8 @@ static void pci_dev_d3_sleep(struct pci_dev *dev)
 	if (delay < pci_pm_d3_delay)
 		delay = pci_pm_d3_delay;
 
-	msleep(delay);
+	if (delay)
+		msleep(delay);
 }
 
 #ifdef CONFIG_PCI_DOMAINS
@@ -601,7 +602,8 @@ static int pci_raw_set_power_state(struct pci_dev *dev, pci_power_t state)
 	/* see PCI PM 1.1 5.6.1 table 18 */
 	if (state == PCI_D3hot || dev->current_state == PCI_D3hot)
 		pci_dev_d3_sleep(dev);
-	else if (state == PCI_D2 || dev->current_state == PCI_D2)
+	else if ((state == PCI_D2 || dev->current_state == PCI_D2)
+	 && (PCI_PM_D2_DELAY))
 		udelay(PCI_PM_D2_DELAY);
 
 	pci_read_config_word(dev, dev->pm_cap + PCI_PM_CTRL, &pmcsr);
@@ -962,7 +964,7 @@ void pci_restore_state(struct pci_dev *dev)
 	for (i = 15; i >= 0; i--) {
 		pci_read_config_dword(dev, i * 4, &val);
 		if (val != dev->saved_config_space[i]) {
-			dev_printk(KERN_DEBUG, &dev->dev, "restoring config "
+			dev_dbg(&dev->dev, "restoring config "
 				"space at offset %#x (was %#x, writing %#x)\n",
 				i, val, (int)dev->saved_config_space[i]);
 			pci_write_config_dword(dev,i * 4,

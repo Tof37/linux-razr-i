@@ -241,7 +241,8 @@ static int
 drm_do_probe_ddc_edid(struct i2c_adapter *adapter, unsigned char *buf,
 		      int block, int len)
 {
-	unsigned char start = block * EDID_LENGTH;
+	unsigned char segment = block / 2;
+	unsigned char start = (block % 2) * EDID_LENGTH;
 	int ret, retries = 5;
 
 	/* The core i2c driver will automatically retry the transfer if the
@@ -250,24 +251,50 @@ drm_do_probe_ddc_edid(struct i2c_adapter *adapter, unsigned char *buf,
 	 * generate spurious NAKs and timeouts. Retrying the transfer
 	 * of the individual block a few times seems to overcome this.
 	 */
-	do {
-		struct i2c_msg msgs[] = {
-			{
-				.addr	= DDC_ADDR,
-				.flags	= 0,
-				.len	= 1,
-				.buf	= &start,
-			}, {
-				.addr	= DDC_ADDR,
-				.flags	= I2C_M_RD,
-				.len	= len,
-				.buf	= buf,
-			}
-		};
-		ret = i2c_transfer(adapter, msgs, 2);
-	} while (ret != 2 && --retries);
+	if (segment > 0) {
+		do {
+			struct i2c_msg msgs[] = {
+				{
+					.addr	= DDC_SEGMENT_ADDR,
+					.flags	= 0,
+					.len	= 1,
+					.buf	= &segment,
+				}, {
+					.addr	= DDC_ADDR,
+					.flags	= 0,
+					.len	= 1,
+					.buf	= &start,
+				}, {
+					.addr	= DDC_ADDR,
+					.flags	= I2C_M_RD,
+					.len	= len,
+					.buf	= buf,
+				}
+			};
+			ret = i2c_transfer(adapter, msgs, 3);
+		} while (ret != 3 && --retries);
 
-	return ret == 2 ? 0 : -1;
+		return ret == 3 ? 0 : -1;
+	} else {
+		do {
+			struct i2c_msg msgs[] = {
+				{
+					.addr	= DDC_ADDR,
+					.flags	= 0,
+					.len	= 1,
+					.buf	= &start,
+				}, {
+					.addr	= DDC_ADDR,
+					.flags	= I2C_M_RD,
+					.len	= len,
+					.buf	= buf,
+				}
+			};
+			ret = i2c_transfer(adapter, msgs, 2);
+		} while (ret != 2 && --retries);
+
+		return ret == 2 ? 0 : -1;
+	}
 }
 
 static bool drm_edid_is_zero(u8 *in_edid, int length)
@@ -304,6 +331,7 @@ drm_do_get_edid(struct drm_connector *connector, struct i2c_adapter *adapter)
 	if (i == 4)
 		goto carp;
 
+	print_hex_dump_bytes(KERN_ERR, DUMP_PREFIX_NONE, block, EDID_LENGTH);
 	/* if there's no extensions, we're done */
 	if (block[0x7e] == 0)
 		return block;
@@ -319,7 +347,13 @@ drm_do_get_edid(struct drm_connector *connector, struct i2c_adapter *adapter)
 				  block + (valid_extensions + 1) * EDID_LENGTH,
 				  j, EDID_LENGTH))
 				goto out;
-			if (drm_edid_block_valid(block + (valid_extensions + 1) * EDID_LENGTH)) {
+			print_hex_dump_bytes(KERN_ERR, DUMP_PREFIX_NONE, block+j*EDID_LENGTH, EDID_LENGTH);
+			if (j < 2) {
+				if (drm_edid_block_valid(block + (valid_extensions + 1) * EDID_LENGTH)) {
+					valid_extensions++;
+					break;
+				}
+			} else {
 				valid_extensions++;
 				break;
 			}
@@ -841,7 +875,7 @@ static struct drm_display_mode *drm_mode_detailed(struct drm_device *dev,
 	unsigned vblank = (pt->vactive_vblank_hi & 0xf) << 8 | pt->vblank_lo;
 	unsigned hsync_offset = (pt->hsync_vsync_offset_pulse_width_hi & 0xc0) << 2 | pt->hsync_offset_lo;
 	unsigned hsync_pulse_width = (pt->hsync_vsync_offset_pulse_width_hi & 0x30) << 4 | pt->hsync_pulse_width_lo;
-	unsigned vsync_offset = (pt->hsync_vsync_offset_pulse_width_hi & 0xc) >> 2 | pt->vsync_offset_pulse_width_lo >> 4;
+	unsigned vsync_offset = (pt->hsync_vsync_offset_pulse_width_hi & 0xc) << 2 | pt->vsync_offset_pulse_width_lo >> 4;
 	unsigned vsync_pulse_width = (pt->hsync_vsync_offset_pulse_width_hi & 0x3) << 4 | (pt->vsync_offset_pulse_width_lo & 0xf);
 
 	/* ignore tiny modes */

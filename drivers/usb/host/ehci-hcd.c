@@ -102,8 +102,8 @@ static int log2_irq_thresh = 0;		// 0 to 6
 module_param (log2_irq_thresh, int, S_IRUGO);
 MODULE_PARM_DESC (log2_irq_thresh, "log2 IRQ latency, 1-64 microframes");
 
-/* initial park setting:  slower than hw default */
-static unsigned park = 0;
+/* initial park setting:  hw default */
+static unsigned park = 3;
 module_param (park, uint, S_IRUGO);
 MODULE_PARM_DESC (park, "park setting; 1-3 back-to-back async packets");
 
@@ -203,7 +203,12 @@ static int tdi_in_host_mode (struct ehci_hcd *ehci)
 	u32 __iomem	*reg_ptr;
 	u32		tmp;
 
-	reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs) + USBMODE);
+	if (ehci->has_hostpc)
+		reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs)
+			 + USBMODE_EX);
+	else
+		reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs)
+			+ USBMODE);
 	tmp = ehci_readl(ehci, reg_ptr);
 	return (tmp & 3) == USBMODE_CM_HC;
 }
@@ -252,7 +257,12 @@ static void tdi_reset (struct ehci_hcd *ehci)
 	u32 __iomem	*reg_ptr;
 	u32		tmp;
 
-	reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs) + USBMODE);
+	if (ehci->has_hostpc)
+		reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs)
+				+ USBMODE_EX);
+	else
+		reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs)
+				+ USBMODE);
 	tmp = ehci_readl(ehci, reg_ptr);
 	tmp |= USBMODE_CM_HC;
 	/* The default byte access to MMR space is LE after
@@ -531,6 +541,9 @@ static void ehci_stop (struct usb_hcd *hcd)
 		ehci_work (ehci);
 	spin_unlock_irq (&ehci->lock);
 	ehci_mem_cleanup (ehci);
+
+	if (hcd->has_sram)
+		sram_deinit(hcd);
 
 	if (ehci->amd_pll_fix == 1)
 		usb_amd_dev_put();
@@ -833,6 +846,14 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		/* resume root hub? */
 		if (!(cmd & CMD_RUN))
 			usb_hcd_resume_root_hub(hcd);
+
+#ifdef CONFIG_USB_SUSPEND
+		/* add time-out wakelock */
+		if (hcd->wake_lock) {
+			wake_lock_timeout(hcd->wake_lock, 5 * HZ);
+			ehci_dbg(ehci, "add 5s wake_lock for connect change\n");
+		}
+#endif
 
 		/* get per-port change detect bits */
 		if (ehci->has_ppcd)
@@ -1172,6 +1193,10 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_PCI
 #include "ehci-pci.c"
 #define	PCI_DRIVER		ehci_pci_driver
+#if defined(CONFIG_USB_LANGWELL_OTG) || defined(CONFIG_USB_PENWELL_OTG)
+#include "ehci-langwell-pci.c"
+#define INTEL_MID_OTG_HOST_DRIVER	ehci_otg_driver
+#endif
 #endif
 
 #ifdef CONFIG_USB_EHCI_FSL
@@ -1346,7 +1371,18 @@ static int __init ehci_hcd_init(void)
 	if (retval < 0)
 		goto clean4;
 #endif
+
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+	retval = intel_mid_ehci_driver_register(&INTEL_MID_OTG_HOST_DRIVER);
+	if (retval < 0)
+		goto clean5;
+#endif
 	return retval;
+
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+clean5:
+	intel_mid_ehci_driver_unregister(&INTEL_MID_OTG_HOST_DRIVER);
+#endif
 
 #ifdef XILINX_OF_PLATFORM_DRIVER
 	/* platform_driver_unregister(&XILINX_OF_PLATFORM_DRIVER); */
@@ -1394,6 +1430,9 @@ static void __exit ehci_hcd_cleanup(void)
 #endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ehci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);
+#endif
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+	intel_mid_ehci_driver_unregister(&INTEL_MID_OTG_HOST_DRIVER);
 #endif
 #ifdef DEBUG
 	debugfs_remove(ehci_debug_root);

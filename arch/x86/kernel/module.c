@@ -85,6 +85,7 @@ int apply_relocate(Elf32_Shdr *sechdrs,
 
 		switch (ELF32_R_TYPE(rel[i].r_info)) {
 		case R_386_32:
+		case R_386_TARGET1:
 			/* We add the value into the location given */
 			*location += sym->st_value;
 			break;

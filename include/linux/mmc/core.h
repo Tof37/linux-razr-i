@@ -10,6 +10,7 @@
 
 #include <linux/interrupt.h>
 #include <linux/device.h>
+#include <linux/mmc/ioctl.h>
 
 struct request;
 struct mmc_data;
@@ -117,6 +118,8 @@ struct mmc_data {
 
 	unsigned int		sg_len;		/* size of scatter list */
 	struct scatterlist	*sg;		/* I/O scatter list */
+	s32			host_cookie;	/* host private data */
+	dma_addr_t		dmabuf;		/* used in panic mode */
 };
 
 struct mmc_request {
@@ -125,19 +128,55 @@ struct mmc_request {
 	struct mmc_data		*data;
 	struct mmc_command	*stop;
 
-	void			*done_data;	/* completion data */
+	struct completion	completion;
 	void			(*done)(struct mmc_request *);/* completion function */
 };
 
+/*
+ * RPMB frame structure for MMC core stack
+ */
+struct mmc_core_rpmb_req {
+	struct mmc_ioc_rpmb_req *req;
+	__u8 *frame;
+	bool ready;
+};
+
+#define RPMB_PROGRAM_KEY	1	/* Program RPMB Authentication Key */
+#define RPMB_GET_WRITE_COUNTER	2	/* Read RPMB write counter */
+#define RPMB_WRITE_DATA		3	/* Write data to RPMB partition */
+#define RPMB_READ_DATA		4	/* Read data from RPMB partition */
+#define RPMB_RESULT_READ	5	/* Read result request */
+#define RPMB_REQ		1	/* RPMB request mark */
+#define RPMB_RESP		(1 << 1)/* RPMB response mark */
+#define RPMB_AVALIABLE_SECTORS	8	/* 4K page size */
+
+#define RPMB_TYPE_BEG		510
+#define RPMB_RES_BEG		508
+#define RPMB_BLKS_BEG		506
+#define RPMB_ADDR_BEG		504
+#define RPMB_WCOUNTER_BEG	500
+
+#define RPMB_NONCE_BEG		484
+#define RPMB_DATA_BEG		228
+#define RPMB_MAC_BEG		196
+
 struct mmc_host;
 struct mmc_card;
+struct mmc_async_req;
 
+extern struct mmc_async_req *mmc_start_req(struct mmc_host *,
+					   struct mmc_async_req *, int *);
 extern void mmc_wait_for_req(struct mmc_host *, struct mmc_request *);
 extern int mmc_wait_for_cmd(struct mmc_host *, struct mmc_command *, int);
 extern int mmc_app_cmd(struct mmc_host *, struct mmc_card *);
 extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
 	struct mmc_command *, int);
 extern int mmc_switch(struct mmc_card *, u8, u8, u8, unsigned int);
+
+extern int mmc_rpmb_partition_ops(struct mmc_core_rpmb_req *,
+		struct mmc_card *);
+extern int mmc_rpmb_pre_frame(struct mmc_core_rpmb_req *, struct mmc_card *);
+extern void mmc_rpmb_post_frame(struct mmc_core_rpmb_req *);
 
 #define MMC_ERASE_ARG		0x00000000
 #define MMC_SECURE_ERASE_ARG	0x80000000
@@ -153,10 +192,15 @@ extern int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 extern int mmc_can_erase(struct mmc_card *card);
 extern int mmc_can_trim(struct mmc_card *card);
 extern int mmc_can_secure_erase_trim(struct mmc_card *card);
+extern int mmc_can_secure_trim(struct mmc_card *card);
 extern int mmc_erase_group_aligned(struct mmc_card *card, unsigned int from,
 				   unsigned int nr);
+extern unsigned int mmc_calc_max_discard(struct mmc_card *card);
 
 extern int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
+extern int mmc_hw_reset(struct mmc_host *host);
+extern int mmc_hw_reset_check(struct mmc_host *host);
+extern int mmc_can_reset(struct mmc_card *card);
 
 extern void mmc_set_data_timeout(struct mmc_data *, const struct mmc_card *);
 extern unsigned int mmc_align_data_size(struct mmc_card *, unsigned int);
@@ -165,6 +209,8 @@ extern int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
 extern void mmc_release_host(struct mmc_host *host);
 extern void mmc_do_release_host(struct mmc_host *host);
 extern int mmc_try_claim_host(struct mmc_host *host);
+
+extern int mmc_detect_card_removed(struct mmc_host *host);
 
 /**
  *	mmc_claim_host - exclusively claim a host
@@ -179,4 +225,7 @@ static inline void mmc_claim_host(struct mmc_host *host)
 
 extern u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max);
 
-#endif
+extern void mmc_start_bkops(struct mmc_card *card);
+extern void mmc_stop_bkops(struct mmc_card *card);
+
+#endif /* LINUX_MMC_CORE_H */

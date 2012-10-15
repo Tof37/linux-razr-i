@@ -197,10 +197,8 @@ int __init arch_early_irq_init(void)
 	struct irq_cfg *cfg;
 	int count, node, i;
 
-	if (!legacy_pic->nr_legacy_irqs) {
-		nr_irqs_gsi = 0;
+	if (!legacy_pic->nr_legacy_irqs)
 		io_apic_irqs = ~0UL;
-	}
 
 	for (i = 0; i < nr_ioapics; i++) {
 		ioapics[i].saved_registers =
@@ -2357,6 +2355,13 @@ void irq_force_complete_move(int irq)
 static inline void irq_complete_move(struct irq_cfg *cfg) { }
 #endif
 
+#ifdef CONFIG_X86_MDFLD
+static int ioapic_set_wake(struct irq_data *data, unsigned int on)
+{
+	return 0;
+}
+#endif
+
 static void ack_apic_edge(struct irq_data *data)
 {
 	irq_complete_move(data->chip_data);
@@ -2529,10 +2534,15 @@ static struct irq_chip ioapic_chip __read_mostly = {
 	.irq_startup		= startup_ioapic_irq,
 	.irq_mask		= mask_ioapic_irq,
 	.irq_unmask		= unmask_ioapic_irq,
+	.irq_disable	= mask_ioapic_irq,
+	.irq_enable		= unmask_ioapic_irq,
 	.irq_ack		= ack_apic_edge,
 	.irq_eoi		= ack_apic_level,
 #ifdef CONFIG_SMP
 	.irq_set_affinity	= ioapic_set_affinity,
+#endif
+#ifdef CONFIG_X86_MDFLD
+	.irq_set_wake	= ioapic_set_wake,
 #endif
 	.irq_retrigger		= ioapic_retrigger_irq,
 };
